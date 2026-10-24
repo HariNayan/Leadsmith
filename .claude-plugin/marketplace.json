@@ -1,0 +1,12 @@
+{
+  "name": "leadsmith",
+  "owner": { "name": "Leadsmith contributors" },
+  "description": "Leadsmith: a local multi-agent buyer-finding engine for Claude Code.",
+  "plugins": [
+    {
+      "name": "leadsmith",
+      "source": "./",
+      "description": "Find buyers with signals, research accounts, draft and send outreach you approve."
+    }
+  ]
+}

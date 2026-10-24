@@ -1,0 +1,16 @@
+{
+  "name": "leadsmith",
+  "displayName": "Leadsmith",
+  "version": "0.2.0",
+  "description": "Multi-agent prospecting engine with a local dashboard: finds companies with buying signals from free sources, the right people, researches accounts, drafts outreach and decks you approve, then sends from your Gmail. Runs on your Claude Code plan, no paid data needed.",
+  "author": { "name": "Leadsmith contributors" },
+  "license": "MIT",
+  "keywords": ["sales", "cold-email", "prospecting", "outbound", "lead-generation", "buying-signals", "mcp"],
+  "mcpServers": {
+    "leadsmith": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--frozen", "--directory", "${CLAUDE_PLUGIN_ROOT}", "leadsmith", "serve"],
+      "env": { "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/venv" }
+    }
+  }
+}
