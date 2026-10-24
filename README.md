@@ -30,16 +30,7 @@ Which one should I make first: A, B or C?
 
 ## How it works
 
-```
- ┌─ 1 Business ─┐   ┌─ 2 Leads ───────────┐   ┌─ 3 Review ─────────┐   ┌─ 4 Outreach ──────────┐
- │ your offer,  │ → │ Find buyers · Add   │ → │ edit · approve ·   │ → │ send from Gmail in    │
- │ ICP, signals,│   │ companies · Import  │   │ send test to me ·  │   │ business hours · auto │
- │ personas,    │   │ CSV → scored on fit │   │ attach PDF deck    │   │ follow-ups · replies  │
- │ voice        │   │ + intent            │   │                    │   │ and bounces handled   │
- └──────────────┘   └─────────────────────┘   └────────────────────┘   └───────────────────────┘
-                              ▲ every button runs your Claude Code in the background
-          Agent 1 Signal Scout → Agent 2 People Finder + Agent 3 Account Researcher → Agent 4 Outreach Writer
-```
+![How Leadsmith works: business profile, leads, review and outreach, powered by four agents running on your Claude Code](docs/how-it-works.png)
 
 - **The engine is Claude Code**, running headless on your own plan. Dashboard buttons start a background run, which you can watch live under **Agent runs**.
 - **Four agents share one memory**: a local SQLite pipeline plus your business profile.
