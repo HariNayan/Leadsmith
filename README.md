@@ -1,9 +1,36 @@
-# Leadsmith
+<p align="center">
+  <img src="docs/logo.png" alt="Leadsmith logo" width="120">
+</p>
 
-**Find buyers, write outreach they reply to, and send it from your Gmail, from a local dashboard powered by your own Claude Code.**
+<h1 align="center">Leadsmith</h1>
 
-No API keys. No paid data providers. No SaaS subscription. Everything runs on your computer and on your Claude plan.
-(One optional paid add-on, BetterContact email verification, stays off unless you add a key.)
+<p align="center">
+  <b>Find buyers, write outreach they reply to, and send it from your Gmail,<br>from a local dashboard powered by your own Claude Code.</b>
+</p>
+
+<p align="center">
+  <a href="#install">Get started</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#a-tour-of-the-dashboard">Tour</a> ·
+  <a href="#safety-rails">Safety</a> ·
+  <a href="COMPLIANCE.md">Compliance</a> ·
+  <a href="https://github.com/HariNayan/Leadsmith/issues">Report a bug</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/HariNayan/Leadsmith/actions/workflows/test.yml"><img src="https://github.com/HariNayan/Leadsmith/actions/workflows/test.yml/badge.svg" alt="tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/runs%20on-Claude%20Code-D97757" alt="Runs on Claude Code">
+  <img src="https://img.shields.io/badge/data-free%20sources-22c55e" alt="Free data sources">
+  <img src="https://img.shields.io/badge/API%20keys-none-6366f1" alt="No API keys">
+  <a href="https://github.com/HariNayan/Leadsmith/stargazers"><img src="https://img.shields.io/github/stars/HariNayan/Leadsmith?style=social" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
+  No API keys. No paid data providers. No SaaS subscription. Everything runs on your computer and on your Claude plan.<br>
+  <sub>One optional paid add-on, BetterContact email verification, stays off unless you add a key.</sub>
+</p>
 
 ![Leadsmith home: ask for buyers in plain English, see your pipeline, top leads and recent agent runs](docs/screenshots/home.png)
 
