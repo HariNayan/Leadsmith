@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leadsmith</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231c1d1f'/%3E%3Cpath d='M8 11h16v11H8z M8.5 11.5 16 17l7.5-5.5' fill='none' stroke='white' stroke-width='2' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <script>try { const t = localStorage.getItem("leadsmith-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="ws"><span class="ws-logo" data-icon="mail"></span>Leadsmith<span class="sub">local</span></div>
+      <button class="quick" id="quick" type="button"><span data-icon="search"></span><span>Search or ask</span><kbd id="quick-kbd">Ctrl K</kbd></button>
+      <nav id="nav" aria-label="Sections">
+        <a href="#/home" data-page="home"><span data-icon="home"></span>Home</a>
+        <a href="#/leads" data-page="leads"><span data-icon="building"></span>Leads<span class="count" id="count-leads"></span></a>
+        <a href="#/review" data-page="review"><span data-icon="inbox"></span>Review<span class="count hot" id="count-review"></span></a>
+        <a href="#/outreach" data-page="outreach"><span data-icon="send"></span>Outreach<span class="count" id="count-outreach"></span></a>
+        <a href="#/activity" data-page="activity"><span data-icon="activity"></span>Agent runs<span class="count" id="count-jobs"></span></a>
+        <div class="nav-label">Setup</div>
+        <a href="#/business" data-page="business"><span data-icon="card"></span>Business profile</a>
+        <a href="#/settings" data-page="settings"><span data-icon="settings"></span>Settings</a>
+      </nav>
+      <div class="health" id="health"></div>
+      <div class="theme-switch" role="radiogroup" aria-label="Appearance">
+        <button type="button" data-theme-set="light" role="radio"><span data-icon="sun"></span>Light</button>
+        <button type="button" data-theme-set="dark" role="radio"><span data-icon="moon"></span>Dark</button>
+        <button type="button" data-theme-set="system" role="radio"><span data-icon="monitor"></span>Auto</button>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar" id="topbar"></header>
+      <div class="content" id="main"></div>
+    </div>
+  </div>
+  <div id="drawer" class="drawer" hidden></div>
+  <div id="modal-root"></div>
+  <div id="toasts" role="status" aria-live="polite"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
