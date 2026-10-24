@@ -1009,7 +1009,7 @@ function replyBlock(c, ideas) {
   return `<div class="reply">
     ${c.last_reply ? `<div class="reply-text">${icon("reply", "sm")}<span>${esc(c.last_reply.slice(0, 280))}${c.last_reply.length > 280 ? "…" : ""}</span></div>` : ""}
     ${draftBtn ? `<div class="reply-pick">${draftBtn}</div>` : ""}
-    ${picked ? `<div class="reply-pick ok">${icon("checkCircle", "sm")}Picked <b>${esc(picked.letter)}) ${esc(picked.title)}</b>: this is the one to make</div>`
+    ${picked ? `<div class="reply-pick ok">${icon("checkCircle", "sm")}<span>Picked <b>${esc(picked.letter)}) ${esc(picked.title)}</b>: this is the one to make</span></div>`
       : guess ? `<div class="reply-pick">${icon("sparkles", "sm")}Looks like they picked <b>${esc(guess.letter)}) ${esc(guess.title)}</b><button class="btn sm primary" data-pick-idea="${guess.id}" data-pick-contact="${c.id}">Confirm</button></div>`
       : ideas.length && c.last_reply ? `<div class="reply-pick">Which idea did they pick? ${ideas.map((i) => `<button class="btn sm" data-pick-idea="${i.id}" data-pick-contact="${c.id}" title="${esc(i.title)}">${esc(i.letter)}</button>`).join("")}</div>` : ""}
   </div>`;

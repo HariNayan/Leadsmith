@@ -257,7 +257,8 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .mail { border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow-md); background: var(--bg); overflow: hidden; }
 .mail-row { display: flex; align-items: center; gap: 10px; padding: 0 16px; min-height: 42px; border-bottom: 1px solid var(--border); }
 .mail-note { min-height: 36px; font-size: 12.5px; color: var(--text-2); background: var(--subtle); gap: 8px; flex-wrap: wrap; padding-top: 4px; padding-bottom: 4px; }
-.mail-note svg { color: var(--green); }
+.mail-note svg { color: var(--green); flex: none; }
+.mail-note > span { flex: 1 1 240px; min-width: 0; }
 .mail-note.warn svg { color: var(--amber); }
 .mail-row .k { color: var(--text-2); width: 56px; flex: none; }
 .chip-person { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px 2px 2px; border-radius: 999px; background: var(--hover); font-weight: 500; }
@@ -393,7 +394,8 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .ideas-head svg { color: var(--violet); }
 .ideas-head span { color: var(--text-2); font-size: 12.5px; }
 .ideas-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
-.idea { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); display: grid; gap: 6px; align-content: start; box-shadow: var(--shadow-sm); min-width: 0; overflow-wrap: anywhere; }
+.idea { border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--bg); display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-content: start; box-shadow: var(--shadow-sm); min-width: 0; overflow-wrap: anywhere; }
+.idea-foot .badge { white-space: normal; max-width: 100%; height: auto; min-height: 20px; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; text-align: left; }
 .idea.picked { border-color: var(--green-bd); background: var(--green-bg); }
 .idea-top { display: flex; align-items: flex-start; gap: 8px; }
 .idea-top b { font-weight: 600; line-height: 1.35; flex: 1; min-width: 0; }
