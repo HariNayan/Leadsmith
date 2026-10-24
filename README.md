@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="docs/logo.png" alt="Leadsmith logo" width="120">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/leadsmith-logo-dark.png">
+    <img src="docs/leadsmith-logo.png" alt="Leadsmith logo" width="120">
+  </picture>
 </p>
 
 <h1 align="center">Leadsmith</h1>
