@@ -56,6 +56,8 @@ const ICONS = {
 const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 $$("[data-icon]").forEach((el) => (el.outerHTML = el.className ? `<span class="${el.className}">${icon(el.dataset.icon)}</span>` : icon(el.dataset.icon)));
 
+const ENGINE_LABELS = { claude: "Claude Code", codex: "Codex", opencode: "OpenCode", gemini: "Gemini CLI" };
+
 async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(path, {
     method, headers: { "Content-Type": "application/json", "X-Leadsmith-Client": "1" },
@@ -209,10 +211,10 @@ async function refreshOverview() {
     $("#count-review").textContent = o.counts.drafts_by_status?.draft || "";
     $("#count-outreach").textContent = o.approved_queue || "";
     $("#count-jobs").innerHTML = o.jobs_running ? '<span class="spin" style="color:var(--primary)" aria-label="running"></span>' : "";
-    const c = o.claude || {};
+    const c = o.engine || {};
     const brainOk = Object.values(o.brain).every((b) => b.complete);
     $("#health").innerHTML = [
-      `<a href="#/settings"><span class="dot ${c.logged_in ? "green" : "red"}"></span>Claude Code ${c.logged_in ? "connected" : c.installed ? "signed out" : "not installed"}</a>`,
+      `<a href="#/settings"><span class="dot ${c.logged_in ? "green" : "red"}"></span>${esc(c.label || "Agent engine")} ${c.logged_in ? "connected" : c.installed ? "signed out" : "not installed"}</a>`,
       `<a href="#/settings"><span class="dot ${o.mail.app_password_set ? (o.mail.send_enabled ? "green" : "amber") : "amber"}"></span>${o.mail.app_password_set ? (o.mail.send_enabled ? "Gmail connected · sending on" : "Gmail connected · sending paused") : "Gmail not connected"}</a>`,
       `<a href="#/business"><span class="dot ${brainOk ? "green" : "amber"}"></span>Profile ${brainOk ? "complete" : "incomplete"}</a>`,
       o.mail.test_recipient ? `<a href="#/settings" title="Every email goes to ${esc(o.mail.test_recipient)}"><span class="dot blue"></span>Test mode on</a>` : "",
@@ -276,7 +278,7 @@ PAGES.home = async () => {
   const toReview = new Set(drafts.map((d) => d.contact_id)).size;
   const sentLimit = o.mail?.daily_limit || 25;
   const setup = [];
-  if (!o.claude?.logged_in) setup.push(["alert", "Sign in to Claude Code", "Agents run on your Claude plan. Run claude in a terminal, then /login.", "#/settings"]);
+  if (o.engine && !o.engine.logged_in) setup.push(["alert", `${o.engine.installed ? "Sign in to" : "Install"} ${o.engine.label}`, o.engine.help || "", "#/settings"]);
   if (o.brain && !Object.values(o.brain).every((b) => b.complete)) setup.push(["card", "Finish your business profile", "Agents use it to pick targets and write emails.", "#/business"]);
   if (!o.mail?.app_password_set) setup.push(["mail", "Connect Gmail", "Send approved emails and track replies.", "#/settings"]);
   setTop("home", "Home");
@@ -285,7 +287,7 @@ PAGES.home = async () => {
     <div class="ask">
       <textarea id="ask" rows="2" placeholder="Find 10 seed-stage fintechs in India hiring their first sales rep and draft emails to the founders" aria-label="Ask the agents"></textarea>
       <div class="ask-foot">
-        <span class="hint">Runs on your Claude plan · nothing is sent without you</span>
+        <span class="hint">Runs on ${esc(o.engine?.plan || "your own plan")} · nothing is sent without you</span>
         ${(homeSug.suggestions.length ? homeSug.suggestions.slice(0, 3).map((x) => `<button class="suggest" data-suggest="Find 10 buyers: ${esc(x.query)}" title="${esc(x.query)}">${icon("sparkles", "sm")}${esc(x.label)}</button>`).join("")
           : `<button class="suggest" data-suggest="Find 10 B2B SaaS companies in the US that raised a Series A in the last 60 days and are hiring sales reps">${icon("zap", "sm")}Just raised + hiring</button>
         <button class="suggest" data-suggest="Find 10 YC companies hiring their first growth marketer">${icon("users", "sm")}YC, first marketer</button>`)}
@@ -1079,12 +1081,12 @@ async function loadJob(id) {
     const old = $(".log", el);
     const atBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 40;
     el.innerHTML = `
-      <div class="comp-head"><div><h2>${esc(j.title)}</h2><div class="meta">${running ? `<span class="spin" style="color:var(--primary)"></span>Running` : badge(j.status)}<span>${j.started_at ? `Started ${ago(j.started_at)}` : "Waiting to start"}${j.finished_at ? ` · finished ${ago(j.finished_at)}` : ""}${j.cost_usd ? ` · $${Number(j.cost_usd).toFixed(2)} of usage` : ""}</span></div></div>
+      <div class="comp-head"><div><h2>${esc(j.title)}</h2><div class="meta">${running ? `<span class="spin" style="color:var(--primary)"></span>Running` : badge(j.status)}<span>${j.started_at ? `Started ${ago(j.started_at)}` : "Waiting to start"}${j.finished_at ? ` · finished ${ago(j.finished_at)}` : ""}${j.cost_usd ? ` · $${Number(j.cost_usd).toFixed(2)} of usage` : ""}${j.engine ? ` · ${esc(ENGINE_LABELS[j.engine] || j.engine)}` : ""}</span></div></div>
         <div class="actions">${running ? `<button class="btn sm danger" data-cancel>${icon("stop", "sm")}Stop</button>` : ""}</div></div>
       ${j.result ? `<div class="${j.status === "failed" ? "callout red" : "context"}" style="margin:16px 0">${icon(j.status === "failed" ? "alert" : "sparkles")}<div>${md(j.result)}</div></div>` : '<div style="height:16px"></div>'}
       <div class="sect">${icon("activity", "sm")}Steps</div>
-      <div class="log">${esc(stepsOnly(j) || (running ? "Starting Claude Code…" : "No output."))}</div>
-      <details style="margin-top:14px"><summary style="color:var(--text-2);cursor:pointer">Instructions sent to Claude</summary><div class="log" style="margin-top:8px">${esc(j.prompt)}</div></details>`;
+      <div class="log">${esc(stepsOnly(j) || (running ? `Starting ${ENGINE_LABELS[j.engine] || "the agent"}…` : "No output."))}</div>
+      <details style="margin-top:14px"><summary style="color:var(--text-2);cursor:pointer">Instructions sent to the agent</summary><div class="log" style="margin-top:8px">${esc(j.prompt)}</div></details>`;
     const log = $(".log", el);
     if (atBottom) log.scrollTop = log.scrollHeight;
     const cancel = $("[data-cancel]", el);
@@ -1106,13 +1108,18 @@ PAGES.settings = async () => {
     const ph = x.kind === "secret" ? (x.is_set ? "Saved. Type to replace" : "xxxx xxxx xxxx xxxx") : "";
     return `<label class="field">${esc(x.label)}<span class="help">${esc(x.help)}</span><input type="${type}" data-key="${key}" value="${esc(x.value)}" ${ph ? `placeholder="${esc(ph)}"` : ""} ${type === "number" ? 'style="width:120px"' : ""} ${extra}></label>`;
   };
-  const c = s.claude;
   const set = (title, blurb, body) => `<div class="set"><div><h3>${title}</h3><p>${blurb}</p></div><div class="fields">${body}</div></div>`;
   setTop("settings", "Settings", "", `<button class="btn primary" id="save-settings">Save changes</button>`);
   main.innerHTML = `<div class="page settings">
-    ${set("Claude Code", "The engine. Agents run on your own Claude plan, no API key needed.",
-      `<div class="toggle-row"><div style="display:flex;gap:8px;align-items:center"><span class="dot ${c.logged_in ? "green" : "red"}"></span><b style="font-weight:500">${c.logged_in ? "Connected" : c.installed ? "Installed, signed out" : "Not installed"}</b>${c.auth_method && c.logged_in ? `<span style="color:var(--text-2)">${esc(c.auth_method)}</span>` : ""}</div></div>
-       ${c.help ? `<div class="callout">${icon("alert")}<div>${esc(c.help)}</div></div>` : ""}${field("CLAUDE_MODEL")}`)}
+    ${set("Agent engine", "The coding agent that runs the four agents, on your own plan. No API key needed in Leadsmith.",
+      `<input type="hidden" data-key="AGENT_ENGINE" value="${esc(f.AGENT_ENGINE.value)}">
+       <div class="engines" role="radiogroup" aria-label="Agent engine">${s.engines.map((e) => `
+         <label class="engine ${e.key === f.AGENT_ENGINE.value ? "on" : ""} ${e.installed ? "" : "missing"}">
+           <input type="radio" name="engine" value="${e.key}" ${e.key === f.AGENT_ENGINE.value ? "checked" : ""}>
+           <span class="engine-main"><b>${esc(e.label)}</b><span class="engine-state"><span class="dot ${e.logged_in ? "green" : e.installed ? "amber" : "red"}"></span>${e.logged_in ? `Ready${e.auth_method ? ` · ${esc(e.auth_method)}` : ""}` : e.installed ? "Installed, signed out" : "Not installed"}</span></span>
+           ${e.help ? `<span class="engine-help">${esc(e.help)}</span>` : ""}
+         </label>`).join("")}</div>
+       ${field("AGENT_MODEL", 'id="agent-model"')}`)}
     ${set("Gmail", "Emails go out from your own inbox, so replies land there too.",
       `${field("GMAIL_ADDRESS")}${field("GMAIL_APP_PASSWORD", 'autocomplete="new-password"')}
        <div class="actions"><button class="btn sm" id="test-gmail">${icon("refresh", "sm")}Test connection</button><span id="gmail-result" style="color:var(--text-2);font-size:12.5px"></span></div>`)}
@@ -1145,6 +1152,18 @@ PAGES.settings = async () => {
     try { await api("/api/settings", { method: "PUT", body }); toast("Settings saved"); refreshOverview(); render(); } catch (e) { fail(e); }
   };
   $$("[data-key]").forEach((el) => (el.dataset.orig = String(el.type === "checkbox" ? el.checked : el.value)));
+  const engineHint = (key) => {
+    const e = s.engines.find((x) => x.key === key) || {};
+    $("#agent-model").placeholder = e.model_hint ? `Default model · ${e.model_hint}` : "Default model";
+  };
+  engineHint(f.AGENT_ENGINE.value);
+  $$('input[name="engine"]').forEach((r) => (r.onchange = () => {
+    $$(".engine").forEach((l) => l.classList.toggle("on", l.contains(r)));
+    const hidden = $('[data-key="AGENT_ENGINE"]');
+    if (hidden.value !== r.value) $("#agent-model").value = "";  // model names differ between engines
+    hidden.value = r.value;
+    engineHint(r.value);
+  }));
   $("#test-gmail").onclick = async () => {
     // Save a changed address or app password first: the test reads the saved settings.
     const body = {};

@@ -24,13 +24,13 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import compliance, config, db, decks, jobs, lint, mailer, templates
+from . import compliance, config, db, decks, engines, jobs, lint, mailer, templates
 from .brain import BRAIN_FILES, read_brain, suggest_searches, write_brain
 
 WEB_DIR = Path(__file__).parent / "web"
 FREE_MAIL = db.FREE_MAIL
 
-_claude_cache: dict[str, Any] = {"at": 0.0, "value": None}
+_engine_cache: dict[str, dict[str, Any]] = {}  # engine key -> {"at": time, "value": status}
 _scheduler: dict[str, Any] = {"last_run": None, "last_result": None}
 
 
@@ -52,14 +52,16 @@ async def body(request: Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def claude_status(force: bool = False) -> dict[str, Any]:
-    # A signed-in result is kept for a minute; a failed check (e.g. Claude Code still starting up
+def engine_status(key: str | None = None, force: bool = False) -> dict[str, Any]:
+    # A signed-in result is kept for a minute; a failed check (e.g. the CLI still starting up
     # after a reboot) is retried after a few seconds instead of showing "signed out" for a minute.
-    cached = _claude_cache["value"]
+    engine = engines.ENGINES.get(key or "") or engines.current()
+    entry = _engine_cache.get(engine.key) or {}
+    cached = entry.get("value")
     max_age = 60 if cached and cached.get("logged_in") else 5
-    if force or not cached or time.time() - _claude_cache["at"] > max_age:
-        _claude_cache.update(at=time.time(), value=jobs.claude_status())
-    return _claude_cache["value"]
+    if force or not cached or time.time() - entry.get("at", 0) > max_age:
+        _engine_cache[engine.key] = {"at": time.time(), "value": engine.status()}
+    return _engine_cache[engine.key]["value"]
 
 
 # ── overview, brain ─────────────────────────────────────────────────────
@@ -72,7 +74,7 @@ async def overview(request: Request) -> Response:
         replied = conn.execute("SELECT COUNT(*) FROM contacts WHERE status IN ('replied', 'meeting')").fetchone()[0]
     return ok({
         "workspace": str(config.HOME),
-        "claude": await asyncio.to_thread(claude_status),
+        "engine": await asyncio.to_thread(engine_status),
         "mail": mailer.mail_status(),
         "brain": {k: {"complete": v["complete"], "todos": v["todos_left"]} for k, v in brain.items()},
         "counts": db.counts(),
@@ -508,9 +510,9 @@ async def list_jobs(request: Request) -> Response:
 
 async def create_job(request: Request) -> Response:
     data = await body(request)
-    claude = claude_status(force=True)
-    if not claude.get("logged_in"):
-        raise ApiError(claude.get("help") or "Claude Code isn't ready.")
+    status = engine_status(force=True)
+    if not status.get("logged_in"):
+        raise ApiError(status.get("help") or f"{status['label']} isn't ready.")
     return ok(jobs.start(data.pop("kind", ""), data))
 
 
@@ -526,7 +528,9 @@ async def cancel_job(request: Request) -> Response:
 
 
 async def get_settings(request: Request) -> Response:
-    return ok({"settings": config.public_settings(), "claude": await asyncio.to_thread(claude_status, True),
+    # Cached: a signed-in engine is re-checked after a minute, a signed-out one after a few seconds.
+    statuses = await asyncio.gather(*(asyncio.to_thread(engine_status, key) for key in engines.ENGINES))
+    return ok({"settings": config.public_settings(), "engine": engine_status(), "engines": statuses,
                "browser": decks.find_browser(), "workspace": str(config.HOME), "env_file": str(config.ENV_FILE)})
 
 
@@ -546,7 +550,11 @@ async def put_settings(request: Request) -> Response:
                 value = str(max(0, int(value)))
             except (TypeError, ValueError):
                 raise ApiError(f"{config.SETTINGS[key][0]} must be a number.")
-        if key == "CLAUDE_MODEL":
+        if key == "AGENT_ENGINE":
+            value = str(value).strip().lower()
+            if value not in engines.ENGINES:
+                raise ApiError(f"Unknown engine {value}. Choose one of: {', '.join(engines.ENGINES)}.")
+        if key == "AGENT_MODEL" and (data.get("AGENT_ENGINE") or engines.current().key) == "claude":
             value = config.normalize_model(str(value))
         updates[key] = str(value).strip()
     config.save_env(updates)

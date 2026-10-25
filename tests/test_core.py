@@ -458,6 +458,72 @@ class RenameMigrationTests(unittest.TestCase):
             self.assertEqual(config._home(), moved)  # second start: nothing to do
 
 
+class EngineTests(unittest.TestCase):
+    """Each engine is started headless with the Leadsmith tools, never with shell/edit or the send tools."""
+
+    def test_every_engine_blocks_sending_and_writing(self):
+        import json as _json
+        from unittest import mock
+
+        from leadsmith import config, engines
+
+        for key, engine in engines.ENGINES.items():
+            with mock.patch.object(engine, "path", return_value=key):
+                cmd, env = engine.command("")
+            blob = " ".join(cmd) + " " + " ".join(env.values())
+            for tool in ("review_drafts", "send_approved_emails"):
+                self.assertIn(tool, blob + (config.HOME / ".gemini" / "settings.json").read_text() if key == "gemini" else blob, key)
+        self.assertIn("read-only", engines.ENGINES["codex"].command("")[0])
+        oc = _json.loads(engines.ENGINES["opencode"].command("")[1]["OPENCODE_CONFIG_CONTENT"])
+        self.assertEqual((oc["permission"]["bash"], oc["permission"]["edit"]), ("deny", "deny"))
+        gem = _json.loads((config.HOME / ".gemini" / "settings.json").read_text())
+        self.assertIn("run_shell_command", gem["tools"]["exclude"])
+        claude = engines.ENGINES["claude"].command("")[0]
+        self.assertIn("Bash", claude[claude.index("--disallowedTools") + 1])
+
+    def test_parsers_read_each_cli_output(self):
+        from leadsmith import engines
+
+        codex = engines.ENGINES["codex"]
+        started = codex.parse({"type": "item.started", "item": {"type": "mcp_tool_call", "tool": "leadsmith_status", "arguments": {}}})
+        self.assertTrue(started.log.startswith("→ leadsmith_status") or started.log.startswith("→ status"))
+        self.assertEqual(codex.parse({"type": "item.completed", "item": {"type": "agent_message", "text": "8"}}).result, "8")
+
+        oc = engines.ENGINES["opencode"]
+        tool = oc.parse({"type": "tool_use", "part": {"tool": "leadsmith_save_account", "state": {"status": "completed", "input": {"domain": "acme.io"}}}})
+        self.assertEqual(tool.log, "→ save_account acme.io\n")
+        self.assertEqual(oc.parse({"type": "step_finish", "part": {"cost": 0.25}}).cost, 0.25)
+
+        gem = engines.ENGINES["gemini"]
+        self.assertIn("→ save_signal", gem.parse({"type": "tool_use", "tool_name": "mcp_leadsmith_save_signal", "parameters": {}}).log)
+        self.assertEqual(gem.parse({"type": "message", "role": "assistant", "content": "Saved 3"}).result_part, "Saved 3")
+
+        claude = engines.ENGINES["claude"]
+        done = claude.parse({"type": "result", "result": "ok", "total_cost_usd": 0.5, "is_error": False})
+        self.assertEqual((done.result, done.cost, done.error), ("ok", 0.5, None))
+
+    def test_engines_without_subagents_get_the_playbooks(self):
+        from leadsmith import engines, jobs
+
+        solo = jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["codex"])
+        self.assertIn("You don't have sub-agents", solo)
+        self.assertIn("Signal Scout", solo)
+        self.assertNotIn("name: signal-scout", solo)  # frontmatter stripped
+        self.assertNotIn("Playbook", jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["claude"]))
+
+    def test_engine_setting_and_old_model_name(self):
+        from unittest import mock
+
+        from leadsmith import engines
+
+        with mock.patch.dict(os.environ, {"AGENT_ENGINE": "codex", "AGENT_MODEL": "", "CLAUDE_MODEL": "opus"}):
+            self.assertEqual((engines.current().key, engines.current_model()), ("codex", ""))
+        with mock.patch.dict(os.environ, {"AGENT_ENGINE": "", "AGENT_MODEL": "", "CLAUDE_MODEL": "opus"}):
+            self.assertEqual((engines.current().key, engines.current_model()), ("claude", "opus"))
+        with mock.patch.dict(os.environ, {"AGENT_ENGINE": "nonsense"}):
+            self.assertEqual(engines.current().key, "claude")
+
+
 class ComplianceTests(unittest.TestCase):
     def test_region_from_zone_location_then_country_domain(self):
         from leadsmith import compliance

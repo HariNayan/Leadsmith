@@ -8,7 +8,7 @@
 <h1 align="center">Leadsmith</h1>
 
 <p align="center">
-  <b>Find buyers, write outreach they reply to, and send it from your Gmail,<br>from a local dashboard powered by your own Claude Code.</b>
+  <b>Find buyers, write outreach they reply to, and send it from your Gmail,<br>from a local dashboard powered by the coding agent you already use.</b>
 </p>
 
 <p align="center">
@@ -24,14 +24,14 @@
   <a href="https://github.com/HariNayan/Leadsmith/actions/workflows/test.yml"><img src="https://github.com/HariNayan/Leadsmith/actions/workflows/test.yml/badge.svg" alt="tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <img src="https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/runs%20on-Claude%20Code-D97757" alt="Runs on Claude Code">
+  <img src="https://img.shields.io/badge/runs%20on-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20OpenCode%20%C2%B7%20Gemini-D97757" alt="Runs on Claude Code, Codex, OpenCode or Gemini CLI">
   <img src="https://img.shields.io/badge/data-free%20sources-22c55e" alt="Free data sources">
   <img src="https://img.shields.io/badge/API%20keys-none-6366f1" alt="No API keys">
   <a href="https://github.com/HariNayan/Leadsmith/stargazers"><img src="https://img.shields.io/github/stars/HariNayan/Leadsmith?style=social" alt="GitHub stars"></a>
 </p>
 
 <p align="center">
-  No API keys. No paid data providers. No SaaS subscription. Everything runs on your computer and on your Claude plan.<br>
+  No API keys. No paid data providers. No SaaS subscription. Everything runs on your computer, on your own Claude, ChatGPT or Google plan.<br>
   <sub>One optional paid add-on, BetterContact email verification, stays off unless you add a key.</sub>
 </p>
 
@@ -60,9 +60,9 @@ Which one should I make first: A, B or C?
 
 ## How it works
 
-![How Leadsmith works: business profile, leads, review and outreach, powered by four agents running on your Claude Code](docs/how-it-works.png)
+![How Leadsmith works: business profile, leads, review and outreach, powered by four agents running on your coding agent](docs/how-it-works.png)
 
-- **The engine is Claude Code**, running headless on your own plan. Dashboard buttons start a background run, which you can watch live under **Agent runs**.
+- **The engine is the coding agent you already use**: Claude Code, Codex, OpenCode or Gemini CLI, running headless on your own plan. Pick one in **Settings → Agent engine**. Dashboard buttons start a background run, which you can watch live under **Agent runs**.
 - **Four agents share one memory**: a local SQLite pipeline plus your business profile.
   1. **Signal Scout** finds companies that fit your ICP *and* show a reason to buy now: hiring, funding, new leaders, launches, tech.
   2. **People Finder** finds the decision maker and their email. It looks for an address published on their site first and only guesses from the company's pattern as a fallback.
@@ -79,7 +79,7 @@ Which one should I make first: A, B or C?
 | Google News | funding rounds, launches, leadership changes, expansions |
 | Y Combinator directory | ~5,000 startups by industry, region, team size and hiring status |
 | Hacker News "Who is hiring" | hundreds of hiring companies every month, with role and website |
-| Claude's WebSearch / WebFetch | everything else: lists, directories, press, podcasts |
+| Your agent's web search / fetch | everything else: lists, directories, press, podcasts |
 | DNS (MX) + email patterns | a likely email per person, labelled `guessed` until it's proven |
 | Your CSV | import leads from Apollo, Sales Navigator, Clay, a CRM or a spreadsheet |
 
@@ -137,7 +137,7 @@ Every run shows its status, live log and cost. Settings holds your Gmail connect
 
 ## Install
 
-You need **[Claude Code](https://claude.com/claude-code)** (signed in) and **[uv](https://docs.astral.sh/uv/getting-started/installation/)**. uv installs Python for you. Chrome or Edge is optional, for PDF decks.
+You need **one coding agent**, installed and signed in (see [Choose your agent engine](#choose-your-agent-engine)), and **[uv](https://docs.astral.sh/uv/getting-started/installation/)**. uv installs Python for you. Chrome or Edge is optional, for PDF decks.
 
 ```bash
 # Windows (PowerShell):  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -176,9 +176,24 @@ It opens **http://127.0.0.1:4600**. Closing the terminal stops the dashboard. Ch
 uv run leadsmith doctor
 ```
 
-### Also use it inside Claude Code (optional)
+## Choose your agent engine
 
-The repo is also a Claude Code plugin, so you can chat with the same agents and tools:
+Leadsmith works with any of these. Install one, sign in once in a terminal, then pick it in **Settings → Agent engine**. Settings shows which ones are installed and signed in.
+
+| Engine | Install | Sign in | Notes |
+|---|---|---|---|
+| **[Claude Code](https://claude.com/claude-code)** | see the site | `claude`, then `/login` | Runs the four agents as real sub-agents. Shows the cost of each run. |
+| **[Codex](https://developers.openai.com/codex)** | `npm install -g @openai/codex` | `codex login` | Uses your ChatGPT plan. Live web search on. |
+| **[OpenCode](https://opencode.ai)** | `npm install -g opencode-ai` | `opencode auth login` | Any provider you've added (Anthropic, OpenAI, GitHub Models, local…). Shows cost when the provider reports it. |
+| **[Gemini CLI](https://geminicli.com)** | `npm install -g @google/gemini-cli` | `gemini`, then sign in with Google (or set `GEMINI_API_KEY`) | Uses your Google account. |
+
+Every engine gets the same Leadsmith tools and the same limits. It can use the Leadsmith tools and the web, but not shell commands, file edits, or the tools that approve and send email. Engines without sub-agents get the four agents' playbooks and do each role in turn. **Model** in Settings is optional. Leave it empty for the engine's default, or use that engine's own model names (e.g. `sonnet`, `gpt-5.5`, `anthropic/claude-sonnet-5-5`, `gemini-3.6-flash`).
+
+### Also chat with Leadsmith inside your agent (optional)
+
+The dashboard is the main way to work, but you can also give your agent Leadsmith's tools and chat with it. Replace `C:/path/to/Leadsmith` with your folder.
+
+**Claude Code**: the repo is a Claude Code plugin, with the agents and skills included:
 
 ```
 /plugin marketplace add HariNayan/Leadsmith
@@ -186,6 +201,34 @@ The repo is also a Claude Code plugin, so you can chat with the same agents and 
 ```
 
 Or, from a clone: `claude --plugin-dir ./Leadsmith`. Then try `/leadsmith:setup`, `/leadsmith:find-buyers 10 fintechs in India hiring sales` or `/leadsmith:dashboard`.
+
+**Codex**:
+
+```bash
+codex mcp add leadsmith -- uv run --directory C:/path/to/Leadsmith leadsmith serve
+```
+
+**OpenCode**: add this to `opencode.json` (in your project, or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "leadsmith": { "type": "local", "command": ["uv", "run", "--directory", "C:/path/to/Leadsmith", "leadsmith", "serve"] }
+  }
+}
+```
+
+**Gemini CLI**: add this to `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "leadsmith": { "command": "uv", "args": ["run", "--directory", "C:/path/to/Leadsmith", "leadsmith", "serve"] }
+  }
+}
+```
+
+Then ask, for example, *"Use the leadsmith tools: read the business profile, then find 5 companies that just raised a seed round and save them."*
 
 ## First run (10 minutes)
 
@@ -232,8 +275,8 @@ Set `LEADSMITH_HOME` to keep a separate workspace per client or product. Coming 
 | Command | What it does |
 |---|---|
 | `uv run leadsmith` | open the dashboard (`--port 4700`, `--no-open`) |
-| `uv run leadsmith doctor` | check Claude Code, free sources, PDF renderer, Gmail, profile |
-| `uv run leadsmith serve` | MCP server over stdio (what Claude Code launches) |
+| `uv run leadsmith doctor` | check the agent engines, free sources, PDF renderer, Gmail, profile |
+| `uv run leadsmith serve` | MCP server over stdio (what your agent launches) |
 | `uv run leadsmith init` | create the workspace without opening the dashboard |
 
 ## Development
@@ -252,7 +295,8 @@ Layout:
 src/leadsmith/
 ├── server.py        MCP tools the agents use
 ├── dashboard.py     local API · web/ is the UI
-├── jobs.py          runs Claude Code in the background
+├── jobs.py          runs the chosen agent in the background
+├── engines.py       Claude Code, Codex, OpenCode and Gemini CLI adapters
 ├── providers/       free data sources (+ optional BetterContact)
 ├── mailer.py        Gmail sending, replies, bounces, warm-up
 ├── schedule.py      prospect time zones and the sending window

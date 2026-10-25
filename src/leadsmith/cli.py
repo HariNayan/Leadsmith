@@ -36,7 +36,7 @@ async def _probe(coro) -> str:
 
 
 def _doctor() -> int:
-    from . import config, decks, jobs, mailer
+    from . import config, decks, engines, mailer
     from .brain import read_brain
     from .providers import emails, hn, news, website, yc
 
@@ -44,10 +44,12 @@ def _doctor() -> int:
     config.ensure_home()
     print(f"Python {sys.version.split()[0]}  |  workspace {config.HOME}\n")
 
-    claude = jobs.claude_status()
-    print("Claude Code (engine):")
-    print(f"  installed        {claude['installed']}")
-    print(f"  signed in        {claude['logged_in']}" + (f"   → {claude['help']}" if claude.get("help") else ""))
+    chosen = engines.current().key
+    print("Agent engines (change in Settings):")
+    for st in engines.all_status():
+        state = "signed in" if st["logged_in"] else "signed out" if st["installed"] else "not installed"
+        mark = "*" if st["key"] == chosen else " "
+        print(f" {mark}{st['label']:<15} {state}" + (f"   → {st['help']}" if st.get("help") and st["key"] == chosen else ""))
 
     print("\nFree data sources:")
     checks = {

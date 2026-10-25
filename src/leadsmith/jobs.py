@@ -1,40 +1,62 @@
-"""Background runs of Claude Code, the engine behind the dashboard buttons.
+"""Background agent runs, the engine behind the dashboard buttons.
 
-Each job runs `claude -p` headless on the user's own Claude plan, with this
-plugin loaded (agents + skills + MCP tools) plus Claude's built-in WebSearch
-and WebFetch. Jobs can research and draft; they can never approve or send.
-That stays a human click in the dashboard.
+Each job runs the user's chosen coding agent headless (Claude Code, Codex, OpenCode or Gemini CLI, see
+engines.py) on their own plan, with the Leadsmith MCP tools plus the agent's own web search. Jobs can research
+and draft; they can never approve or send. That stays a human click in the dashboard.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import shutil
+import re
 import subprocess
-import sys
 import threading
-from pathlib import Path
 from typing import Any
 
-from . import config, db
+from . import config, db, engines
+from .engines import PLUGIN_ROOT
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[2]
-# Jobs attach the MCP server straight from this Python (instant start, same code as the dashboard)
-# and load agents + skills from the plugin folder. --strict-mcp-config drops the plugin's own uv-launched copy.
-TOOL_PREFIX = "mcp__leadsmith__"
-ALLOWED_TOOLS = [f"{TOOL_PREFIX}*", "WebSearch", "WebFetch", "Agent", "Task", "Skill", "TodoWrite"]
-BLOCKED_TOOLS = [f"{TOOL_PREFIX}{name}" for name in ("review_drafts", "send_approved_emails")] + [
-    "Bash", "Edit", "Write", "NotebookEdit",
-]
 MAX_LOG = 200_000
 
 HEADLESS_NOTE = """You are running unattended, started from the Leadsmith dashboard.
 - Never ask the user questions. Make sensible choices from the business profile and state assumptions in your final summary.
-- Use the leadsmith agents and MCP tools, plus WebSearch/WebFetch for discovery and finding people.
-- Save everything with the leadsmith tools; the user works from the dashboard, not this transcript.
+- Use the Leadsmith MCP tools, plus your web search and web fetch tools (if you have them) for discovery and finding people.
+- Save everything with the Leadsmith tools; the user works from the dashboard, not this transcript.
 - You cannot approve or send anything. The user reviews drafts in the dashboard.
 - Finish with a short summary: what you saved (accounts, contacts, drafts) and anything that blocked you."""
+
+# Engines without sub-agents get the playbooks inline and play each role themselves.
+ROLES = {
+    "find_buyers": ["skills/find-buyers/SKILL.md", "agents/signal-scout.md", "agents/account-researcher.md",
+                    "agents/people-finder.md", "agents/outreach-writer.md"],
+    "research": ["agents/account-researcher.md", "agents/people-finder.md", "agents/outreach-writer.md"],
+    "write": ["agents/outreach-writer.md"],
+    "ideas": ["agents/outreach-writer.md"],
+    "emails": ["agents/people-finder.md"],
+}
+SOLO_NOTE = """You don't have sub-agents. Wherever these instructions say to run or dispatch an agent (signal-scout,
+account-researcher, people-finder, outreach-writer, with or without a "leadsmith:" prefix), do that role's work yourself,
+one role after another, following its playbook below. Skip any step about reviewing drafts with the user, approving or
+sending. Your tool list may show the Leadsmith tools with a prefix (leadsmith_..., mcp_leadsmith_...): they are the
+tools named in the playbooks. If you have no web search tool, rely on search_news, find_yc_companies, find_hn_hiring,
+scan_website and find_emails_on_page."""
+
+
+def _playbooks(kind: str) -> str:
+    docs = []
+    for rel in ROLES.get(kind, []):
+        try:
+            text = (PLUGIN_ROOT / rel).read_text(encoding="utf-8")
+        except OSError:
+            continue
+        docs.append(re.sub(r"\A---.*?---\s*", "", text, flags=re.S).strip())
+    return "\n\n".join([SOLO_NOTE, *(f"=== Playbook: {rel} ===\n{doc}" for rel, doc in zip(ROLES[kind], docs))]) if docs else ""
+
+
+def full_prompt(kind: str, prompt: str, engine: engines.Engine) -> str:
+    extra = "" if engine.subagents else _playbooks(kind)
+    return "\n\n---\n\n".join(part for part in (HEADLESS_NOTE, prompt, extra) if part)
 
 PROMPTS: dict[str, tuple[str, str]] = {
     # kind -> (title template, prompt template)
@@ -97,23 +119,9 @@ PROMPTS: dict[str, tuple[str, str]] = {
 }
 
 
-def claude_path() -> str | None:
-    return shutil.which("claude")
-
-
-def claude_status() -> dict[str, Any]:
-    path = claude_path()
-    if not path:
-        return {"installed": False, "logged_in": False,
-                "help": "Install Claude Code: https://claude.com/claude-code, then run `claude` once to sign in."}
-    try:
-        out = subprocess.run([path, "auth", "status", "--json"], capture_output=True, text=True, timeout=20)
-        info = json.loads(out.stdout or "{}")
-    except (OSError, ValueError, subprocess.TimeoutExpired):
-        info = {}
-    logged_in = bool(info.get("loggedIn"))
-    return {"installed": True, "logged_in": logged_in, "auth_method": info.get("authMethod"),
-            "help": None if logged_in else "Open a terminal, run `claude`, and sign in with /login."}
+def engine_status() -> dict[str, Any]:
+    """Status of the engine chosen in Settings."""
+    return engines.current().status()
 
 
 def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
@@ -157,64 +165,27 @@ def _append(job_id: int, text: str) -> None:
         conn.execute("UPDATE jobs SET log = substr(log || ?, -?) WHERE id = ?", (text, MAX_LOG, job_id))
 
 
-def _short(value: Any, limit: int = 90) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _describe(event: dict[str, Any]) -> str:
-    """Turn one stream-json event into a readable log line (or nothing)."""
-    kind = event.get("type")
-    indent = "    " if event.get("parent_tool_use_id") else ""
-    if kind == "assistant":
-        lines = []
-        for block in (event.get("message") or {}).get("content") or []:
-            if block.get("type") == "text" and block.get("text", "").strip():
-                lines.append(f"{indent}{block['text'].strip()}")
-            elif block.get("type") == "tool_use":
-                name = block.get("name", "").replace(TOOL_PREFIX, "")
-                args = block.get("input") or {}
-                if name in ("Agent", "Task"):
-                    lines.append(f"{indent}▶ agent {args.get('subagent_type', '')}: {_short(args.get('description', ''))}")
-                else:
-                    detail = args.get("domain") or args.get("query") or args.get("url") or args.get("website") or args
-                    lines.append(f"{indent}→ {name} {_short(detail)}")
-        return "\n".join(lines) + "\n" if lines else ""
-    if kind == "result":
-        return ""
-    return ""
-
-
-def _run(job_id: int, prompt: str) -> None:
-    path = claude_path()
-    mcp_config = config.HOME / ".dashboard-mcp.json"
-    mcp_config.write_text(json.dumps({"mcpServers": {"leadsmith": {
-        "command": sys.executable, "args": ["-m", "leadsmith.cli", "serve"], "env": {"LEADSMITH_HOME": str(config.HOME)},
-    }}}), encoding="utf-8")
-    cmd = [path or "claude", "-p", "--plugin-dir", str(PLUGIN_ROOT), "--mcp-config", str(mcp_config),
-           "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
-           "--permission-mode", "dontAsk", "--allowedTools", ",".join(ALLOWED_TOOLS),
-           "--disallowedTools", ",".join(BLOCKED_TOOLS)]
+def _run(job_id: int, kind: str, prompt: str) -> None:
+    engine = engines.current()
     try:
-        model = config.normalize_model(config.get("CLAUDE_MODEL"))
-    except ValueError:
-        model = ""  # an unusable value falls back to the Claude Code default instead of failing the run
-    if model:
-        cmd += ["--model", model]
-    env = {**os.environ, "LEADSMITH_HOME": str(config.HOME)}
+        cmd, extra_env = engine.command(engines.current_model())
+    except OSError as exc:
+        _finish(job_id, "failed", f"Could not prepare {engine.label}: {exc}", None)
+        return
+    env = {**os.environ, **extra_env, "LEADSMITH_HOME": str(config.HOME)}
     with db.connect() as conn:
         conn.execute("UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?", (db.now(), job_id))
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding="utf-8", errors="replace", env=env, cwd=str(config.HOME))
     except OSError as exc:
-        _finish(job_id, "failed", f"Could not start Claude Code: {exc}", None)
+        _finish(job_id, "failed", f"Could not start {engine.label}: {exc}", None)
         return
     _PROCS[job_id] = proc
     assert proc.stdin and proc.stdout
-    proc.stdin.write(f"{HEADLESS_NOTE}\n\n---\n\n{prompt}")
+    proc.stdin.write(full_prompt(kind, prompt, engine))
     proc.stdin.close()
-    result_text, cost, failed = None, None, False
+    result_text, cost, error = "", 0.0, None
     for line in proc.stdout:
         line = line.strip()
         if not line:
@@ -224,26 +195,30 @@ def _run(job_id: int, prompt: str) -> None:
         except ValueError:
             _append(job_id, line + "\n")
             continue
-        if event.get("type") == "result":
-            result_text = event.get("result")
-            cost = event.get("total_cost_usd")
-            failed = bool(event.get("is_error"))
-        else:
-            text = _describe(event)
-            if text:
-                _append(job_id, text)
+        if not isinstance(event, dict):
+            continue
+        parsed = engine.parse(event)
+        if parsed.log:
+            _append(job_id, parsed.log)
+        if parsed.result is not None:
+            result_text = parsed.result
+        result_text += parsed.result_part
+        cost += parsed.cost
+        error = parsed.error or error
     proc.wait()
     stderr = (proc.stderr.read() if proc.stderr else "").strip()
     _PROCS.pop(job_id, None)
+    result_text = result_text.strip() or None
+    spent = cost or None
     if _CANCELLED.pop(job_id, False):
-        _finish(job_id, "cancelled", result_text or "Stopped by you.", cost)
-    elif proc.returncode != 0 or failed:
-        message = result_text or stderr or f"Claude Code exited with code {proc.returncode}"
-        if "auth" in message.lower() or "login" in message.lower():
-            message += "\nSign in: open a terminal, run `claude`, then /login."
-        _finish(job_id, "failed", message, cost)
+        _finish(job_id, "cancelled", result_text or "Stopped by you.", spent)
+    elif proc.returncode != 0 or error:
+        message = error or result_text or stderr[-1500:] or f"{engine.label} exited with code {proc.returncode}"
+        if any(word in message.lower() for word in ("auth", "login", "log in", "sign in", "credential", "api key")):
+            message += f"\n{engine.sign_in}"
+        _finish(job_id, "failed", message, spent)
     else:
-        _finish(job_id, "done", result_text, cost)
+        _finish(job_id, "done", result_text, spent)
 
 
 def _finish(job_id: int, status: str, result: str | None, cost: float | None) -> None:
@@ -259,14 +234,15 @@ _CANCELLED: dict[int, bool] = {}
 def start(kind: str, params: dict[str, Any]) -> dict[str, Any]:
     if kind not in PROMPTS:
         raise ValueError(f"Unknown job kind {kind}")
-    if not claude_path():
-        raise ValueError("Claude Code isn't installed. Get it at https://claude.com/claude-code and sign in.")
+    engine = engines.current()
+    if not engine.path():
+        raise ValueError(f"{engine.label} isn't installed. {engine.install}")
     title, prompt = _fmt(kind, params)
     with db.connect() as conn:
-        cur = conn.execute("INSERT INTO jobs (kind, title, prompt, created_at) VALUES (?, ?, ?, ?)",
-                           (kind, title, prompt, db.now()))
+        cur = conn.execute("INSERT INTO jobs (kind, title, prompt, engine, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (kind, title, prompt, engine.key, db.now()))
         job_id = cur.lastrowid
-    threading.Thread(target=_run, args=(job_id, prompt), daemon=True).start()
+    threading.Thread(target=_run, args=(job_id, kind, prompt), daemon=True).start()
     return get(job_id) or {}
 
 
@@ -275,7 +251,11 @@ def cancel(job_id: int) -> bool:
     if not proc:
         return False
     _CANCELLED[job_id] = True
-    proc.terminate()
+    if os.name == "nt":
+        # npm-installed CLIs run through a .cmd shim; end the whole process tree, not just the shim.
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    else:
+        proc.terminate()
     return True
 
 
@@ -287,7 +267,7 @@ def get(job_id: int) -> dict[str, Any] | None:
 def recent(limit: int = 30) -> list[dict[str, Any]]:
     with db.connect() as conn:
         return db.rows(conn.execute(
-            "SELECT id, kind, title, status, cost_usd, started_at, finished_at, created_at,"
+            "SELECT id, kind, title, status, cost_usd, engine, started_at, finished_at, created_at,"
             " substr(result, 1, 400) AS result FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
         ))
 

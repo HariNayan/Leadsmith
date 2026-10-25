@@ -83,8 +83,9 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
                          "Emails in a batch go out this far apart, so Gmail sees a person, not a blast. 60 = one a minute."),
     "AUTO_FOLLOWUPS": ("Automatic follow-ups", "bool", "true",
                        "While the dashboard is open, send approved follow-ups when due and stop on reply."),
-    "CLAUDE_MODEL": ("Claude model", "text", "",
-                     "Optional: sonnet, opus, haiku, or a version like \"Sonnet 5.5\". Empty = your Claude Code default."),
+    "AGENT_ENGINE": ("Agent engine", "engine", "claude",
+                     "The coding agent that runs the four agents: claude, codex, opencode or gemini."),
+    "AGENT_MODEL": ("Model", "text", "", "Optional. Empty = the engine's own default model."),
     "DECK_COLOR": ("Deck accent colour", "text", "#4f46e5", "Hex colour used in PDF decks."),
     "BETTERCONTACT_API_KEY": ("BetterContact API key (optional, paid)", "secret", "",
                               "Off unless set. Adds a Verify button for guessed emails: one person per click, charged by "
