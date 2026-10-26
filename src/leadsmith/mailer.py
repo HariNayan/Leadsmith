@@ -22,7 +22,7 @@ from email.utils import formataddr, make_msgid
 from pathlib import Path
 from typing import Any
 
-from . import config, db, decks, schedule
+from . import config, db, decks, lint, schedule
 
 SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 465
 IMAP_HOST = "imap.gmail.com"
@@ -178,6 +178,8 @@ def _build(draft: dict[str, Any], contact: dict[str, Any], first: dict[str, Any]
         body = f"[Test mode: in live mode this goes to {name} <{contact['email']}>]\n\n{body}"
     signature = _signature()
     msg.set_content(f"{body}\n\n{signature}\n" if signature else f"{body}\n")
+    if lint.claims_attachment(draft["body"]) and not (draft.get("attach_deck") and decks.pdf_ready(contact["domain"])):
+        raise ValueError("This email says a deck is attached, but the deck PDF is missing. Rebuild the deck or edit the email.")
     if draft.get("attach_deck"):
         deck = decks.get(contact["domain"])
         if deck and deck.get("pdf_path") and Path(deck["pdf_path"]).exists():
@@ -316,7 +318,14 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
                             finished_at=None, last_error=None, gap_seconds=gap)
         try:
             for index, (draft, contact, first, overdue_days) in enumerate(queue):
-                msg = _build(draft, contact, first)
+                try:
+                    msg = _build(draft, contact, first)
+                except ValueError as exc:  # e.g. it says a deck is attached but the PDF is gone: skip, never send
+                    report["skipped"].append({"draft_id": draft["id"], "step": draft["step"], "to": contact["email"],
+                                              "reason": str(exc)})
+                    PROGRESS["failed"] = PROGRESS.get("failed", 0) + 1
+                    PROGRESS["last_error"] = str(exc)
+                    continue
                 entry = {"draft_id": draft["id"], "step": draft["step"], "to": msg["To"], "prospect": contact["email"],
                          "test_mode": bool(test_recipient()), "subject": msg["Subject"],
                          "days_late": round(overdue_days, 1) if overdue_days >= 1 else 0}
@@ -389,7 +398,10 @@ def send_test(draft_id: int) -> dict[str, Any]:
             first = db.one(conn.execute(
                 "SELECT * FROM drafts WHERE contact_id = ? AND step = 1 AND channel = 'email'", (draft["contact_id"],)
             ))
-    msg = _build(draft, {**contact, "email": address}, first)
+    try:
+        msg = _build(draft, {**contact, "email": address}, first)
+    except ValueError as exc:
+        return {"error": str(exc)}
     msg.replace_header("Subject", f"[TEST to {contact.get('email') or 'prospect'}] {msg['Subject']}")
     for header in ("In-Reply-To", "References"):
         del msg[header]

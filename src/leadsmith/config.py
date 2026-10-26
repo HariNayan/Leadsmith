@@ -83,6 +83,9 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
                          "Emails in a batch go out this far apart, so Gmail sees a person, not a blast. 60 = one a minute."),
     "AUTO_FOLLOWUPS": ("Automatic follow-ups", "bool", "true",
                        "While the dashboard is open, send approved follow-ups when due and stop on reply."),
+    "EMAIL_STYLE": ("Email style", "text", "idea_menu",
+                    "idea_menu: three ideas they pick from with one letter. personal_pitch: one specific compliment, "
+                    "what you do for buyers like theirs, a personal deck attached, and a short call ask."),
     "AGENT_ENGINE": ("Agent engine", "engine", "claude",
                      "The coding agent that runs the four agents: claude, codex, opencode or gemini."),
     "AGENT_MODEL": ("Model", "text", "", "Optional. Empty = the engine's own default model."),

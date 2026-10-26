@@ -118,6 +118,12 @@ def build(domain: str, title: str, slides: list[dict[str, Any]]) -> dict[str, An
     return {"domain": domain, "pdf": str(pdf_path) if not error else None, "html": str(html_path), "error": error}
 
 
+def pdf_ready(domain: str) -> bool:
+    """True only when the account's deck rendered as a PDF that's still on disk, i.e. it can really be attached."""
+    deck = get(domain)
+    return bool(deck and deck.get("pdf_path") and Path(deck["pdf_path"]).exists())
+
+
 def get(domain: str) -> dict[str, Any] | None:
     with db.connect() as conn:
         deck = db.one(conn.execute("SELECT * FROM decks WHERE domain = ?", (db.normalize_domain(domain),)))

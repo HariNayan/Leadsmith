@@ -74,6 +74,16 @@ def brain_read() -> dict:
                           "behind the 'bad' ones and respect their reasons. These override your own fit scoring.",
             "verdicts": feedback,
         }
+    style = (config.get("EMAIL_STYLE") or "idea_menu").strip()
+    result["email_style"] = {
+        "style": style,
+        "how_to_use": ("Write every first email as a PERSONAL PITCH, following the 'Style: personal pitch' section of the "
+                       "outreach-writer playbook: build the account's deck first (save_deck), then save step 1 with "
+                       "attach_deck=true. This overrides any 'Offer ideas' line in voice.md."
+                       if style == "personal_pitch" else
+                       "Write first emails as an IDEA MENU (three ideas, A/B/C), following the outreach-writer playbook. "
+                       "voice.md may still say 'Offer ideas: no' to use a classic sequence instead."),
+    }
     custom = templates.customised()
     if custom:
         result["step_templates"] = {
@@ -329,7 +339,8 @@ def render_step_template(contact_id: int, step: int) -> dict:
 
 @mcp.tool()
 def save_draft(contact_id: int, step: int, body: str, subject: str | None = None,
-               channel: Literal["email", "linkedin"] = "email", send_after_days: int | None = None) -> dict:
+               channel: Literal["email", "linkedin"] = "email", send_after_days: int | None = None,
+               attach_deck: bool = False) -> dict:
     """Save one step of a sequence for a contact as a draft for the user to review. Runs lint_email automatically.
 
     Args:
@@ -339,17 +350,24 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
         subject: required for step 1; follow-ups reuse it as "Re:" in the same thread
         channel: email or linkedin (linkedin drafts are for the user to send by hand)
         send_after_days: days after step 1 to send (default 0 / 3 / 7)
+        attach_deck: attach the account's PDF deck (save_deck first; it must have rendered as a PDF). Only then may
+                     the body say a deck is attached.
     """
     contact = db.get_contact(contact_id)
     if not contact:
         return {"error": f"No contact with id {contact_id}. Call save_contact first."}
+    if attach_deck and not decks.pdf_ready(contact["domain"]):
+        return {"error": "There's no PDF deck for this account to attach. Call save_deck first (and check it rendered "
+                         "as a PDF), or save the email without attach_deck and without mentioning an attachment."}
     account = db.dossier(contact["domain"]) or {}
-    result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"))
+    result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"), attached=bool(attach_deck))
     delay = send_after_days if send_after_days is not None else {1: 0, 2: 3}.get(step, 7)
     try:
         draft = db.upsert_draft(contact_id, step, subject, body, channel, delay, result)
     except ValueError as exc:
         return {"error": str(exc)}
+    with db.connect() as conn:
+        conn.execute("UPDATE drafts SET attach_deck = ? WHERE id = ?", (int(bool(attach_deck)), draft["id"]))
     return {"draft_id": draft["id"], "status": draft["status"], "lint": result,
             "hint": "Fix every FAIL and re-save before showing it to the user." if not result["ok"] else None}
 

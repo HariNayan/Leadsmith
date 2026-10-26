@@ -48,8 +48,16 @@ def _words(text: str) -> list[str]:
     return re.findall(r"[A-Za-z0-9'’\-]+", text)
 
 
+ATTACH_RE = re.compile(r"\b(attached|attaching|i've attached|i have attached|see the attachment|enclosed)\b", re.I)
+
+
+def claims_attachment(text: str) -> bool:
+    return bool(ATTACH_RE.search(text or ""))
+
+
 def check(subject: str | None, body: str, step: int = 1, company: str | None = None,
-          first_name: str | None = None, kind: str = "sequence") -> dict[str, Any]:
+          first_name: str | None = None, kind: str = "sequence", attached: bool | None = None) -> dict[str, Any]:
+    """`attached`: whether a deck PDF really goes with this email (None = unknown, not checked)."""
     issues: list[dict[str, str]] = []
 
     def add(level: str, rule: str, message: str) -> None:
@@ -57,6 +65,9 @@ def check(subject: str | None, body: str, step: int = 1, company: str | None = N
 
     text = body or ""
     lower = text.lower()
+    if attached is False and claims_attachment(text):
+        add("FAIL", "attachment", "The email says something is attached, but no deck is attached. "
+                                  "Attach the deck (it must have rendered as a PDF) or remove that line.")
     words = len(_words(text))
     target, cap = WORD_LIMITS.get(step, WORD_LIMITS[3])
     if kind == "reply":  # answering someone who wrote to you: room for real answers, no cold-email rules about CTAs
