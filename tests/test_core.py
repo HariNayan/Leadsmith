@@ -473,7 +473,8 @@ class EngineTests(unittest.TestCase):
             blob = " ".join(cmd) + " " + " ".join(env.values())
             for tool in ("review_drafts", "send_approved_emails"):
                 self.assertIn(tool, blob + (config.HOME / ".gemini" / "settings.json").read_text() if key == "gemini" else blob, key)
-        self.assertIn("read-only", engines.ENGINES["codex"].command("")[0])
+        for session in (None, "abc"):  # new and continued sessions are both read-only
+            self.assertIn('sandbox_mode="read-only"', engines.ENGINES["codex"].command("", session)[0])
         oc = _json.loads(engines.ENGINES["opencode"].command("")[1]["OPENCODE_CONFIG_CONTENT"])
         self.assertEqual((oc["permission"]["bash"], oc["permission"]["edit"]), ("deny", "deny"))
         gem = _json.loads((config.HOME / ".gemini" / "settings.json").read_text())
@@ -764,6 +765,279 @@ class EngineConnectTests(unittest.TestCase):
         self.assertEqual(self.c.get("/api/overview").json()["engine"]["key"], "codex")  # still the one connected
         self.c.post("/api/engines/disconnect", json={})
         self.assertFalse(self.c.get("/api/overview").json()["engine"]["connected"])
+
+
+class SessionTests(unittest.TestCase):
+    """A connection holds one conversation: runs continue it, and "continue previous" picks up the last one."""
+
+    def fake_engine(self):
+        import sys as _sys
+
+        from leadsmith import engines
+
+        class Echo(engines.Engine):
+            # Prints the session it was asked to continue, or a new id, then a result.
+            def path(self):
+                return _sys.executable
+
+            def command(self, model, session=None):
+                code = ("import json,sys,uuid; s=sys.argv[1] or 'new-'+uuid.uuid4().hex[:6]; "
+                        "print(json.dumps({'type':'system','session_id':s})); print(json.dumps({'type':'done','text':s}))")
+                return [_sys.executable, "-c", code, session or ""], {}
+
+            def session_of(self, event):
+                return event.get("session_id")
+
+            def parse(self, event):
+                return engines.Parsed(result=event.get("text")) if event.get("type") == "done" else engines.Parsed()
+
+        return Echo("echo", "Echo", "echo", "", "", "your echo plan", subagents=True)
+
+    def wait(self, job_id):
+        import time as _time
+
+        from leadsmith import jobs
+
+        for _ in range(100):
+            job = jobs.get(job_id)
+            if job["status"] not in ("queued", "running"):
+                return job
+            _time.sleep(0.1)
+        self.fail("job didn't finish")
+
+    def test_runs_in_one_connection_share_the_session(self):
+        from unittest import mock
+
+        from leadsmith import engines, jobs
+
+        with mock.patch.dict(engines.ENGINES, {"echo": self.fake_engine()}):
+            conn = {"session_id": None}
+            first = self.wait(jobs.start("custom", {"prompt": "one"}, "echo", conn)["id"])
+            self.assertTrue(first["result"].startswith("new-"))
+            self.assertEqual(conn["session_id"], first["result"])
+            second = self.wait(jobs.start("custom", {"prompt": "two"}, "echo", conn)["id"])
+            self.assertEqual(second["result"], first["result"])  # continued, not a new conversation
+            self.assertEqual(jobs.last_session("echo")["session_id"], first["result"])
+            other = self.wait(jobs.start("custom", {"prompt": "fresh"}, "echo", {"session_id": None})["id"])
+            self.assertNotEqual(other["result"], first["result"])
+
+    def test_plans_are_read_from_each_cli_file(self):
+        import base64 as _b64
+        import json as _json
+        import tempfile as _tmp
+        from pathlib import Path
+        from unittest import mock
+
+        from leadsmith import engines
+
+        home = Path(_tmp.mkdtemp())
+        (home / ".claude.json").write_text(_json.dumps({"oauthAccount": {"organizationType": "claude_max"}}))
+        claims = _b64.urlsafe_b64encode(_json.dumps({"https://api.openai.com/auth": {
+            "chatgpt_plan_type": "plus", "chatgpt_subscription_active_until": "2999-01-31T00:00:00+00:00"}}).encode()).decode().rstrip("=")
+        (home / ".codex").mkdir()
+        (home / ".codex" / "auth.json").write_text(_json.dumps({"auth_mode": "chatgpt", "tokens": {"id_token": f"x.{claims}.y"}}))
+        (home / ".local" / "share" / "opencode").mkdir(parents=True)
+        (home / ".local" / "share" / "opencode" / "auth.json").write_text(_json.dumps({"anthropic": {"type": "oauth"}}))
+        (home / ".gemini").mkdir()
+        (home / ".gemini" / "settings.json").write_text(_json.dumps({"security": {"auth": {"selectedType": "oauth-personal"}}}))
+        with mock.patch.object(engines.Path, "home", return_value=home):
+            plans = {k: e.account() for k, e in engines.ENGINES.items()}
+        self.assertEqual(plans["claude"]["plan"], "Claude Max")
+        self.assertEqual((plans["codex"]["plan"], plans["codex"]["detail"]), ("ChatGPT Plus", "Active until 31 Jan 2999"))
+        self.assertEqual((plans["opencode"]["plan"], plans["opencode"]["detail"]), ("Anthropic", "OpenCode providers · subscription"))
+        self.assertEqual(plans["gemini"]["plan"], "Google account")
+
+    def test_continue_needs_a_previous_session(self):
+        from unittest import mock
+
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard, engines, jobs
+
+        client = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        ready = {"key": "gemini", "label": "Gemini CLI", "plan": "x", "installed": True, "logged_in": True}
+        with mock.patch.object(engines.Gemini, "status", return_value=ready), \
+             mock.patch.object(engines.Gemini, "models", return_value=[]), \
+             mock.patch.object(dashboard.config, "save_env"):
+            with mock.patch.object(jobs, "last_session", return_value=None):
+                self.assertEqual(client.post("/api/engines/connect", json={"engine": "gemini", "session": "continue"}).status_code, 400)
+            prev = {"session_id": "abc", "title": "Find 5 buyers", "status": "done", "at": "2026-10-25T10:00:00+00:00"}
+            with mock.patch.object(jobs, "last_session", return_value=prev):
+                r = client.post("/api/engines/connect", json={"engine": "gemini", "session": "continue"}).json()
+        self.assertEqual((r["session_mode"], r["session_id"]), ("continue", "abc"))
+        dashboard._connected["engine"] = None
+
+
+class PersonalPitchTests(unittest.TestCase):
+    """The personal-pitch style mentions an attached deck, so that claim must always be true."""
+
+    BODY = ("Hi Dana,\n\nThe new Kestrel trail shoe looks great, and the weeks before a drop are when video does the most work.\n\n"
+            "We film footwear brands on real trails, so buyers can see grip and fit before they order.\n\n"
+            "I've attached a 4-page deck made for Kestrel with a two-day shoot plan.\n\nWould a short call this week help?")
+
+    def setUp(self):
+        import uuid
+
+        self.domain = f"kestrel-{uuid.uuid4().hex[:5]}.io"
+        db.upsert_account(self.domain, name="Kestrel")
+        self.contact, _ = db.upsert_contact(self.domain, first_name="Dana", email=f"dana@{self.domain}")
+
+    def test_cannot_save_or_approve_a_false_attachment_claim(self):
+        from unittest import mock
+
+        from leadsmith import dashboard, decks, server
+
+        r = server.save_draft(self.contact["id"], 1, self.BODY, "Kestrel trail shoe, before the drop", attach_deck=True)
+        self.assertIn("no PDF deck", r["error"])  # nothing to attach yet
+        saved = server.save_draft(self.contact["id"], 1, self.BODY, "Kestrel trail shoe, before the drop")
+        self.assertEqual(saved["lint"]["issues"][0]["rule"], "attachment")
+        with mock.patch.object(decks, "pdf_ready", return_value=True):
+            good = server.save_draft(self.contact["id"], 1, self.BODY, "Kestrel trail shoe, before the drop", attach_deck=True)
+            self.assertTrue(good["lint"]["ok"])
+            self.assertEqual(dashboard._review([good["draft_id"]], "approve")["done"], [good["draft_id"]])
+        db.set_status("draft", good["draft_id"], "draft")
+        refused = dashboard._review([good["draft_id"]], "approve")["refused"]  # the deck PDF has gone missing
+        self.assertIn("attached", refused[0]["reason"])
+
+    def test_mailer_refuses_to_send_without_the_promised_attachment(self):
+        from leadsmith import mailer
+
+        draft = {"id": 1, "step": 1, "subject": "hi", "body": self.BODY, "attach_deck": 1}
+        with self.assertRaises(ValueError):
+            mailer._build(draft, {**self.contact, "email": f"dana@{self.domain}"}, None)
+
+    def test_brain_read_tells_the_writer_which_style(self):
+        from unittest import mock
+
+        from leadsmith import server
+
+        with mock.patch.dict(os.environ, {"EMAIL_STYLE": "personal_pitch"}):
+            self.assertEqual(server.brain_read()["email_style"]["style"], "personal_pitch")
+        with mock.patch.dict(os.environ, {"EMAIL_STYLE": ""}):
+            self.assertEqual(server.brain_read()["email_style"]["style"], "idea_menu")
+
+
+class RegenerateTests(unittest.TestCase):
+    def setUp(self):
+        import uuid
+
+        self.domain = f"regen-{uuid.uuid4().hex[:5]}.io"
+        db.upsert_account(self.domain, name="Regen Co")
+        self.contact, _ = db.upsert_contact(self.domain, first_name="Ravi", last_name="K", email=f"ravi@{self.domain}")
+        ok = {"ok": True, "issues": []}
+        self.ids = [db.upsert_draft(self.contact["id"], n, "hi" if n == 1 else None, f"body {n}", "email", 0, ok)["id"] for n in (1, 2, 3)]
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'sent', sent_at = ? WHERE id = ?", (db.now(), self.ids[0]))
+            conn.execute("UPDATE drafts SET status = 'approved' WHERE id IN (?, ?)", (self.ids[1], self.ids[2]))
+
+    def test_prompt_targets_only_unsent_steps(self):
+        from leadsmith import jobs
+
+        title, prompt = jobs._fmt("rewrite", {"contact_id": self.contact["id"], "extra": "shorter"})
+        self.assertEqual(title, "Regenerate emails: Ravi K")
+        self.assertIn("step 2, step 3", prompt)
+        self.assertIn("Step 1 already went out", prompt)
+        self.assertIn("shorter", prompt)
+
+    def test_regenerate_takes_approved_emails_off_the_send_queue(self):
+        from unittest import mock
+
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard, jobs
+
+        client = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        dashboard._connected["engine"] = {"key": "claude", "label": "Claude Code", "session_id": None}
+        try:
+            with mock.patch.object(jobs, "start", return_value={"id": 1, "title": "Regenerate"}) as start:
+                r = client.post("/api/jobs", json={"kind": "rewrite", "contact_id": self.contact["id"]}).json()
+            start.assert_called_once()
+        finally:
+            dashboard._connected["engine"] = None
+        self.assertEqual(r["paused"], 2)
+        with db.connect() as conn:
+            statuses = [conn.execute("SELECT status FROM drafts WHERE id = ?", (i,)).fetchone()[0] for i in self.ids]
+        self.assertEqual(statuses, ["sent", "draft", "draft"])
+
+
+class EditEmailTests(unittest.TestCase):
+    def test_edit_email_validates_and_sends_approved_emails_back_to_review(self):
+        import uuid
+
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard
+
+        client = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        tag = uuid.uuid4().hex[:5]
+        domain = f"edit-{tag}.io"
+        db.upsert_account(domain, name="Edit Co")
+        c, _ = db.upsert_contact(domain, first_name="Meera", email=f"meera@{domain}", email_status="guessed")
+        other, _ = db.upsert_contact(domain, first_name="Ola", email=f"ola@{domain}")
+        draft = db.upsert_draft(c["id"], 1, "hi", "Hi Meera, quick one.", "email", 0, {"ok": True, "issues": []})
+        db.set_status("draft", draft["id"], "approved")
+        url = f"/api/contacts/{c['id']}/email"
+        self.assertEqual(client.put(url, json={"email": "not an email"}).status_code, 400)
+        self.assertIn("already belongs", client.put(url, json={"email": f"ola@{domain}"}).json()["error"])
+        db.suppress(f"blocked@{domain}", "test")
+        self.assertIn("do-not-contact", client.put(url, json={"email": f"blocked@{domain}"}).json()["error"])
+        r = client.put(url, json={"email": f"Meera.R@{domain}"}).json()
+        self.assertEqual((r["email"], r["paused"]), (f"meera.r@{domain}", 1))
+        updated = db.get_contact(c["id"])
+        self.assertEqual((updated["email"], updated["email_status"]), (f"meera.r@{domain}", "manual"))
+        with db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT status FROM drafts WHERE id = ?", (draft["id"],)).fetchone()[0], "draft")
+
+
+class RerunTests(unittest.TestCase):
+    def fake(self, key, fail):
+        import sys as _sys
+
+        from leadsmith import engines
+
+        class Fake(engines.Engine):
+            def path(self):
+                return _sys.executable
+
+            def command(self, model, session=None):
+                code = ("import json; print(json.dumps({'type':'error','message':\"You've hit your usage limit.\"}))" if fail
+                        else "import json; print(json.dumps({'type':'done','text':'finished'}))")
+                return [_sys.executable, "-c", code], {}
+
+            def parse(self, event):
+                if event.get("type") == "error":
+                    return engines.Parsed(error=event["message"])
+                return engines.Parsed(result=event.get("text"))
+
+        return Fake(key, key.title(), key, "", "", "x", subagents=True)
+
+    def wait(self, job_id):
+        import time as _time
+
+        from leadsmith import jobs
+
+        for _ in range(100):
+            job = jobs.get(job_id)
+            if job["status"] not in ("queued", "running"):
+                return job
+            _time.sleep(0.1)
+        self.fail("job didn't finish")
+
+    def test_a_failed_run_can_be_rerun_on_another_agent(self):
+        from unittest import mock
+
+        from leadsmith import engines, jobs
+
+        with mock.patch.dict(engines.ENGINES, {"limited": self.fake("limited", True), "spare": self.fake("spare", False)}):
+            failed = self.wait(jobs.start("custom", {"prompt": "Find 3 buyers"}, "limited")["id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("usage limit", failed["result"])
+            again = self.wait(jobs.rerun(failed["id"], "spare")["id"])
+            self.assertEqual((again["status"], again["engine"], again["kind"], again["title"]), ("done", "spare", "custom", failed["title"]))
+            self.assertIn("Find 3 buyers", again["prompt"])
+            self.assertEqual(again["prompt"].count("stopped part-way"), 1)
+            third = self.wait(jobs.rerun(again["id"], "spare")["id"])
+            self.assertEqual(third["prompt"].count("stopped part-way"), 1)  # the note isn't stacked
 
 
 class GmailFriendlyTests(unittest.TestCase):
