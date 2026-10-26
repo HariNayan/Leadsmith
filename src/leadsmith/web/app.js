@@ -211,29 +211,62 @@ function wireModelPicker(root) {
   other.oninput = sync;
 }
 
+function sessionLine(cur) {
+  if (cur.session_mode === "continue" && cur.session_from) return `Continuing your session from ${ago(cur.session_from.at)}`;
+  return cur.session_id ? "Session started in this connection" : "New session: starts with your next run";
+}
+
 function engineCards(list, current) {
   return `<div class="engines">${list.map((e) => {
     const on = current.connected && current.key === e.key;
     const last = !current.connected && current.key === e.key;
+    const acct = (on ? current.account : null) || e.account;
+    // Header row: name, tag and the button. Below it, the details get the card's full width.
     return `<div class="engine ${on ? "on" : ""} ${e.installed ? "" : "missing"}">
-      <span class="engine-main"><span class="engine-name"><b>${esc(e.label)}</b>${on ? '<span class="engine-tag">Connected</span>' : last ? '<span class="engine-tag last">Last used</span>' : ""}</span>
-        <span class="engine-state"><span class="dot ${on ? "green" : e.installed ? "grey" : "red"}"></span>${on ? `Running on ${esc(e.plan)}` : e.installed ? "Installed · not connected" : "Not installed"}</span>
-        ${e.installed ? "" : `<span class="engine-help">${esc(e.install)}</span>`}</span>
-      <span class="engine-act">${on ? `<button class="btn sm" data-disconnect>Disconnect</button>`
-        : e.installed ? `<button class="btn sm ${last ? "primary" : ""}" data-connect="${e.key}">Connect</button>` : ""}</span>
+      <div class="engine-head"><b>${esc(e.label)}</b>${on ? '<span class="engine-tag">Connected</span>' : last ? '<span class="engine-tag last">Last used</span>' : ""}
+        <span class="engine-act">${on ? `<button class="btn sm" data-disconnect>Disconnect</button>`
+          : e.installed ? `<button class="btn sm ${last ? "primary" : ""}" data-connect="${e.key}">Connect</button>` : ""}</span></div>
+      ${acct ? `<div class="engine-plan">${icon("card", "sm")}<span><span class="plan-name">${esc(acct.plan)}</span>${acct.detail ? `<span class="plan-detail">${esc(acct.detail)}</span>` : ""}</span></div>` : ""}
+      <div class="engine-state"><span class="dot ${on ? "green" : e.installed ? "grey" : "red"}"></span>${on ? esc(sessionLine(current)) : e.installed ? "Installed · not connected" : "Not installed"}</div>
+      ${e.installed ? "" : `<div class="engine-help">${esc(e.install)}</div>`}
     </div>`;
   }).join("")}</div>`;
 }
 
-function wireEngineCards(root, after) {
-  $$("[data-connect]", root).forEach((b) => (b.onclick = async () => {
-    const label = b.closest(".engine").querySelector("b").textContent;
-    b.disabled = true; b.textContent = "Checking…";
-    try {
-      await api("/api/engines/connect", { method: "POST", body: { engine: b.dataset.connect } });
-      toast(`${esc(label)} connected`);
-      after(true);
-    } catch (e) { fail(e); b.disabled = false; b.textContent = "Connect"; }
+// Before connecting: start a new conversation, or pick up the last one this agent had in Leadsmith.
+function chooseSession(e, onChosen, onCancel) {
+  const prev = e.last_session;
+  modal({
+    title: `Connect ${e.label}`, art: "zap", confirm: "Connect", cancel: "Cancel",
+    intro: `${e.account ? `Signed in with ${esc(e.account.plan)}. ` : ""}Runs in this connection share one conversation, so the agent remembers what it did in earlier runs.`,
+    body: `<div class="session-pick" role="radiogroup" aria-label="Session">
+      <label class="session-opt"><input type="radio" name="session" value="new" ${prev ? "" : "checked"}>
+        <span><b>Start a new session</b><span>A fresh conversation. Uses less of your plan.</span></span></label>
+      <label class="session-opt ${prev ? "" : "off"}"><input type="radio" name="session" value="continue" ${prev ? "checked" : "disabled"}>
+        <span><b>Continue previous session</b><span>${prev ? `From ${esc(ago(prev.at))}: “${esc(prev.title)}”` : `No earlier ${esc(e.label)} session yet.`}</span></span></label>
+    </div>`,
+    onConfirm: async (root) => {
+      const mode = ($('input[name="session"]:checked', root) || {}).value || "new";
+      await onChosen(mode);
+    },
+  });
+  if (onCancel) {
+    const root = $("#modal-root");
+    const watch = new MutationObserver(() => { if (!root.innerHTML) { watch.disconnect(); onCancel(); } });
+    watch.observe(root, { childList: true });
+  }
+}
+
+function wireEngineCards(root, list, after) {
+  $$("[data-connect]", root).forEach((b) => (b.onclick = () => {
+    const e = list.find((x) => x.key === b.dataset.connect) || { key: b.dataset.connect, label: b.dataset.connect };
+    let connected = false;
+    chooseSession(e, async (mode) => {
+      await api("/api/engines/connect", { method: "POST", body: { engine: e.key, session: mode } });
+      connected = true;
+      toast(`${esc(e.label)} connected · ${mode === "continue" ? "continuing your previous session" : "new session"}`);
+      after(true);  // before the dialog closes, so closing it isn't read as "cancelled"
+    }, () => { if (!connected) after(null); });
   }));
   $$("[data-disconnect]", root).forEach((b) => (b.onclick = async () => {
     await api("/api/engines/disconnect", { method: "POST", body: {} });
@@ -255,7 +288,8 @@ function ensureEngine() {
       body: engineCards(data.engines, data.engine),
     });
     const root = $("#modal-root");
-    wireEngineCards(root, async (connected) => {
+    wireEngineCards(root, data.engines, async (connected) => {
+      if (connected === null) { if (!done) { done = true; resolve(false); } return; }  // closed the session choice
       if (!connected) return;
       done = true;
       await refreshOverview();
@@ -461,12 +495,27 @@ function fillTemplate(text, values) {
 }
 
 async function stepsPage() {
-  const { steps, placeholders, sample } = await api("/api/templates");
+  const { steps, placeholders, sample, style, deck_pdf } = await api("/api/templates");
   const values = sample ? sample.values : Object.fromEntries(Object.keys(placeholders).map((k) => [k, `[${k}]`]));
   setTop("card", "Business profile", "what every agent reads first", `<button class="btn primary" id="save-steps">Save</button>`);
   main.innerHTML = `
     ${brainTabs("steps", null)}
     <div class="page" style="max-width:980px">
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-head">${icon("mail", "sm")}Email style<span style="font-weight:400;color:var(--text-2);margin-left:6px">how the writer opens with every lead</span></div>
+        <div class="card-body"><div class="styles" role="radiogroup" aria-label="Email style">
+          ${[["idea_menu", "Idea menu", "Three ideas made for them. They reply with one letter.",
+              "Hi Dana,\n\nSaw the Kestrel trail shoe launch. Three things I could make for you:\nA) 45-second launch walkthrough\nB) Three vertical clips for the drop\nC) A trail-tested customer story\n\nWhich one should I make first?"],
+             ["personal_pitch", "Personal pitch + deck", "One specific compliment, what you do for buyers like theirs, a deck made for them, a short call ask.",
+              "Hi Dana,\n\nThe new Kestrel trail shoe looks great, and the weeks before a drop are when product video does the most work.\n\nNorthlight Studio films footwear brands on real trails, so buyers can see grip and fit before they order.\n\nI've attached a 4-page deck made for Kestrel with a two-day shoot plan.\n\nWould a short call this week help?"]]
+            .map(([key, name, about, sampleText]) => `<label class="style-opt ${style === key ? "on" : ""}">
+              <span class="style-top"><input type="radio" name="email-style" value="${key}" ${style === key ? "checked" : ""}><b>${name}</b></span>
+              <span class="style-about">${esc(about)}</span>
+              <pre class="style-sample">${esc(sampleText)}</pre></label>`).join("")}
+        </div>
+        ${!deck_pdf ? `<p class="help" style="margin:10px 0 0">${icon("alert", "sm")} Personal pitch attaches a PDF deck, which needs Chrome or Edge installed. Without one, the writer leaves the deck line out.</p>` : ""}
+        <p class="help" style="margin:10px 0 0">With personal pitch, the writer builds the deck before writing and attaches it; an email that says "attached" can't be approved or sent unless the deck really is.</p></div>
+      </div>
       <div class="callout blue" style="margin-bottom:14px">${icon("info")}<div>For each step, let the AI write a fresh email (with an extra instruction if you like) or use <b>your own template</b>. Templates fill in the lead's details; any <code>{name}</code> that isn't listed below, like <code>{personal_line}</code>, is written by the AI as one sourced sentence. Signature and opt-out line are added at send time.</div></div>
       ${steps.map((t) => `
       <div class="card step-card" data-step="${t.step}" style="margin-bottom:14px">
@@ -490,6 +539,14 @@ async function stepsPage() {
       </div>`).join("")}
     </div>`;
   $$("[data-tab]").forEach((b) => (b.onclick = () => { state.brainTab = b.dataset.tab; render(); }));
+  $$('input[name="email-style"]').forEach((r) => (r.onchange = async () => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { EMAIL_STYLE: r.value } });
+      $$(".style-opt").forEach((l) => l.classList.toggle("on", l.contains(r)));
+      toast(r.value === "personal_pitch" ? "Personal pitch on: new drafts open with a compliment, a deck made for them and a call ask."
+        : "Idea menu on: new drafts offer three ideas to pick from.");
+    } catch (e) { fail(e); }
+  }));
   const preview = (card) => {
     const subj = $('[data-k="subject"]', card);
     $(".pv-subject", card).textContent = subj ? fillTemplate(subj.value, values) : "";
@@ -931,7 +988,7 @@ function renderComposer(steps) {
     <div class="comp-head">${avatar(fullName(c), "lg")}
       <div><h2>${esc(fullName(c))}</h2><div class="meta">${esc(c.title || "")}${c.title ? " at" : ""} ${logo(c.domain, c.company)} ${esc(c.company || c.domain)}</div></div>
       <div class="actions"><button class="btn sm" data-open="${esc(c.domain)}">${icon("building", "sm")}Company</button>
-        ${c.has_deck ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank">${icon("file", "sm")}Deck</a>` : ""}
+        ${c.has_deck ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener">${icon("file", "sm")}View deck</a>` : ""}
         ${pending.length > 1 ? `<button class="btn sm" data-approve-all>${icon("check", "sm")}Approve all ${pending.length}</button>` : ""}</div>
     </div>
     ${c.why_now ? `<div class="context">${icon("sparkles")}<div><b>Why now.</b> ${esc(c.why_now)}</div></div>` : '<div style="height:14px"></div>'}
@@ -946,7 +1003,11 @@ function renderComposer(steps) {
     <div class="steps" role="tablist">${steps.map((x) => `<button role="tab" data-step="${x.id}" class="${x.id === s.id ? "active" : ""}" aria-selected="${x.id === s.id}">${x.kind === "reply" ? "Your reply" : x.channel === "linkedin" ? "LinkedIn note" : `Email ${x.step}`}<span class="day">${x.kind === "reply" ? "answer" : x.channel === "linkedin" ? "manual" : x.step === 1 ? "Day 0" : `Day ${x.send_after_days}`}</span>${x.status !== "draft" ? badge(x.status, null, false) : ""}</button>`).join("")}</div>
     <div class="mail" data-draft="${s.id}">
       ${s.channel === "email" ? `
-        <div class="mail-row"><span class="k">To</span><span class="chip-person" style="white-space:nowrap">${avatar(fullName(c))}${esc(fullName(c))}</span><span style="color:var(--text-2)">${esc(c.email || "no email")}</span>${c.email_status ? badge(c.email_status, `${cap(c.email_status)} email`, false) : ""}</div>
+        <div class="mail-row to-row"><span class="k">To</span><span class="chip-person" style="white-space:nowrap">${avatar(fullName(c))}${esc(fullName(c))}</span>
+          <span class="to-view" style="display:contents"><span style="color:var(--text-2)">${esc(c.email || "no email")}</span>${c.email_status ? badge(c.email_status, c.email_status === "manual" ? "Entered by you" : `${cap(c.email_status)} email`, false) : ""}
+            <button class="btn sm ghost" data-edit-email title="Change this person's email address">${c.email ? "Edit" : "Add email"}</button></span>
+          <span class="to-edit" hidden><input type="email" data-email-input value="${esc(c.email || "")}" placeholder="name@company.com" aria-label="Email address">
+            <button class="btn sm primary" data-email-save>Save</button><button class="btn sm" data-email-cancel>Cancel</button></span></div>
         ${c.region ? `<div class="mail-row mail-note">${icon("info", "sm")}<span><b>${esc(c.region.label)}:</b> ${esc(c.region.rule)}</span></div>` : ""}
         ${c.email && c.email_status === "public" && sourceUrl(c.contact_notes) ? `<div class="mail-row mail-note">${icon("checkCircle", "sm")}<span>Published address, found on ${sourceLink(c.contact_notes)}</span></div>`
           : c.email_status === "guessed" ? `<div class="mail-row mail-note warn">${icon("alert", "sm")}<span>Guessed from the company's email pattern, so it may bounce.</span><button class="btn sm" data-find-email style="margin-left:auto">${icon("search", "sm")}Look for a published email</button>${state.overview?.bettercontact ? `<button class="btn sm" data-verify="${c.contact_id}" title="Paid: BetterContact charges only if it finds a usable email">${icon("checkCircle", "sm")}Verify (BetterContact)</button>` : ""}</div>` : ""}
@@ -954,7 +1015,8 @@ function renderComposer(steps) {
         : `<div class="mail-row"><span class="k">LinkedIn</span><span>Connection note to ${esc(fullName(c))}. Send it yourself.</span></div>`}
       <textarea data-body aria-label="Email body" ${editable ? "" : "disabled"}>${esc(s.body)}</textarea>
       <div class="mail-foot">
-        ${c.has_deck && s.channel === "email" ? `<label class="check" style="font-size:12.5px"><input type="checkbox" data-attach ${s.attach_deck ? "checked" : ""} ${editable ? "" : "disabled"}>${icon("file", "sm")}Attach deck</label>` : ""}
+        ${c.has_deck && s.channel === "email" ? `<label class="check" style="font-size:12.5px"><input type="checkbox" data-attach ${s.attach_deck ? "checked" : ""} ${editable ? "" : "disabled"}>${icon("file", "sm")}Attach deck</label>
+          <a class="btn sm ghost" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener" title="Open the deck that goes with this email">${icon("external", "sm")}View deck</a>` : ""}
         ${s.channel === "linkedin" ? `<button class="btn sm" data-copy>${icon("copy", "sm")}Copy</button>` : ""}
         <span class="grow"></span>
         ${s.channel === "email" && editable ? `<button class="btn sm ghost" data-test>${icon("send", "sm")}Send test to me</button>` : ""}
@@ -1002,6 +1064,25 @@ function renderComposer(steps) {
   on("[data-test]", async () => { try { await save(); const r = await api(`/api/drafts/${s.id}/test`, { method: "POST", body: {} }); toast(`Test sent to ${esc(r.sent_to)}`); } catch (e) { fail(e); } });
   on("[data-open]", () => openAccount(c.domain));
   on("[data-new-ideas]", async () => { try { await startJob("ideas", { domains: [c.domain] }); } catch (e) { fail(e); } });
+  on("[data-edit-email]", () => {
+    $(".to-view", el).style.display = "none"; $(".to-edit", el).hidden = false;
+    const input = $("[data-email-input]", el); input.focus(); input.select();
+  });
+  on("[data-email-cancel]", () => { $(".to-edit", el).hidden = true; $(".to-view", el).style.display = "contents"; });
+  const saveEmail = async () => {
+    const email = $("[data-email-input]", el).value.trim();
+    const sent = steps.some((x) => x.status === "sent");
+    if (sent && !confirm(`Earlier emails already went to ${c.email}. Send the rest to ${email}?`)) return;
+    try {
+      const r = await api(`/api/contacts/${c.contact_id}/email`, { method: "PUT", body: { email } });
+      if (r.unchanged) { $("[data-email-cancel]", el).click(); return; }
+      toast(`Email updated to ${esc(r.email)}${r.paused ? `. ${plural(r.paused, "approved email")} moved back to review for the new address.` : "."}`);
+      refreshOverview(); render();
+    } catch (e) { fail(e); }
+  };
+  on("[data-email-save]", saveEmail);
+  const emailInput = $("[data-email-input]", el);
+  if (emailInput) emailInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); saveEmail(); } if (e.key === "Escape") $("[data-email-cancel]", el).click(); };
   on("[data-find-email]", async () => { try { await startJob("emails", { domains: [c.domain] }); } catch (e) { fail(e); } });
   wireVerify(el, () => render());
   on("[data-approve-all]", async () => {
@@ -1045,7 +1126,8 @@ PAGES.outreach = async () => {
           <tr>
             <td style="padding-left:16px;width:auto;border-right:1px solid var(--border);white-space:normal;max-width:460px"><div class="company">${avatar(fullName(c))}<div style="min-width:0"><div class="name">${esc(fullName(c))}</div><div class="domain">${esc(c.company || c.domain)} · ${esc(c.email || "")}</div></div></div>
               ${replyBlock(c, outreachIdeas[c.domain] || [])}</td>
-            <td><div style="display:flex;gap:6px;flex-wrap:wrap">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div></td>
+            <td><div style="display:flex;gap:6px;flex-wrap:wrap">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div>
+              ${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm regen" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Rewrite the emails that haven't gone out yet">${icon("refresh", "sm")}Regenerate</button>` : ""}</td>
             <td style="color:var(--text-2)">${c.last_sent ? ago(c.last_sent) : "–"}</td>
             <td><select data-stage="${c.id}" style="width:auto;height:28px;padding-top:0;padding-bottom:0" aria-label="Stage for ${esc(fullName(c))}">${[c.status, ...stages.filter((s) => s !== c.status)].map((s) => `<option value="${s}">${cap(s)}</option>`).join("")}</select></td>
           </tr>`).join("")}</tbody></table></div>`
@@ -1056,6 +1138,23 @@ PAGES.outreach = async () => {
     try { await startJob("reply", { contact_id: Number(b.dataset.draftReply) }); b.disabled = true; b.textContent = "Drafting…"; } catch (e) { fail(e); }
   }));
   $$("[data-review-contact]").forEach((a) => (a.onclick = () => { state.reviewTab = "draft"; state.reviewContact = Number(a.dataset.reviewContact); }));
+  $$("[data-regen]").forEach((b) => (b.onclick = () => {
+    const contact = contacts.find((x) => x.id === Number(b.dataset.regen)) || { steps: [] };
+    const unsent = contact.steps.filter((s) => s.kind !== "reply" && ["approved", "draft", "rejected"].includes(s.status));
+    modal({
+      title: `Regenerate ${b.dataset.name}'s emails?`, art: "refresh", confirm: "Regenerate",
+      intro: `The agent rewrites ${unsent.length === 1 ? "the email" : `the ${unsent.length} emails`} that haven't gone out yet (${unsent.map((s) => `email ${s.step}`).join(", ")}). Sent emails stay as they are.`,
+      body: `<label class="field">What should change? <span class="help">Optional. For example: shorter, lead with their new pricing page, warmer tone.</span>
+          <textarea id="regen-extra" rows="3" placeholder="Leave empty for a fresh take"></textarea></label>
+        <div class="callout" style="margin-top:12px">${icon("info")}<div>They come off the send queue now, so nothing goes out while the agent works. The new versions wait in <b>Review</b> until you approve them again.</div></div>`,
+      onConfirm: async (root) => {
+        const extra = $("#regen-extra", root).value.trim();
+        const job = await startJob("rewrite", { contact_id: contact.id, extra }, { quiet: true });
+        toast(`Regenerating ${esc(b.dataset.name)}'s emails${job.paused ? `; ${plural(job.paused, "email")} paused until you review` : ""}. <a href="#/activity">View run</a>`);
+        render();
+      },
+    });
+  }));
   $$("[data-stage]").forEach((s) => (s.onchange = async () => {
     try { await api(`/api/contacts/${s.dataset.stage}/status`, { method: "POST", body: { status: s.value } }); toast("Stage updated"); render(); } catch (e) { fail(e); }
   }));
@@ -1170,6 +1269,55 @@ function stepsOnly(j) {
   return log;
 }
 
+const limitHit = (j) => j.status === "failed" && /usage limit|rate.?limit|quota|\b429\b|high demand|\b503\b|overloaded/i.test(j.result || "");
+
+// Run a failed or stopped task again: on the agent that ran it, or on another one the user picks.
+async function rerunJob(j, pickAnother) {
+  const go = async () => {
+    const job = await api(`/api/jobs/${j.id}/rerun`, { method: "POST", body: {} });
+    state.jobsSeen[job.id] = "running";
+    state.activeJob = job.id;
+    toast(`Running “${esc(job.title)}” again on ${esc(ENGINE_LABELS[job.engine] || job.engine)}`);
+    refreshOverview(); render();
+  };
+  try {
+    const cur = state.overview?.engine || {};
+    if (!pickAnother) {
+      if (cur.connected && cur.key === j.engine) return await go();
+      // Same agent, but it isn't the connected one right now: connect it first (with the session choice).
+      const data = await api("/api/engines");
+      const e = data.engines.find((x) => x.key === j.engine);
+      if (!e || !e.installed) return toast(`${esc(ENGINE_LABELS[j.engine] || j.engine)} isn't installed. Use Run with another agent.`, "error");
+      return chooseSession(e, async (mode) => {
+        await api("/api/engines/connect", { method: "POST", body: { engine: e.key, session: mode } });
+        await refreshOverview();
+        await go();
+      });
+    }
+    const data = await api("/api/engines");
+    const others = data.engines.filter((e) => e.installed && e.key !== j.engine);
+    if (!others.length) return toast("No other agent is installed. Install Codex, OpenCode, Gemini CLI or Claude Code, then try again.", "error");
+    modal({
+      title: "Run this task with another agent", art: "zap", wide: true, confirm: null, cancel: "Cancel",
+      intro: `“${esc(j.title)}” stopped on ${esc(ENGINE_LABELS[j.engine] || j.engine)}. Pick another agent: it picks up from what's already saved.`,
+      body: engineCards(others, { ...data.engine, connected: data.engine.connected && data.engine.key !== j.engine }),
+    });
+    const root = $("#modal-root");
+    // Connected already (and different from the failed one)? Its card offers Disconnect; offer "Use" instead.
+    $$("[data-disconnect]", root).forEach((b) => {
+      b.outerHTML = `<button class="btn sm primary" data-use-connected>Run on this agent</button>`;
+    });
+    const use = $("[data-use-connected]", root);
+    if (use) use.onclick = async () => { root.innerHTML = ""; try { await go(); } catch (e) { fail(e); } };
+    wireEngineCards(root, others, async (connected) => {
+      if (!connected) return;
+      root.innerHTML = "";
+      await refreshOverview();
+      try { await go(); } catch (e) { fail(e); }
+    });
+  } catch (e) { fail(e); }
+}
+
 async function loadJob(id) {
   const el = $("#job-detail");
   if (!el || state.page !== "activity" || state.activeJob !== id) return;
@@ -1180,13 +1328,16 @@ async function loadJob(id) {
     const atBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 40;
     el.innerHTML = `
       <div class="comp-head"><div><h2>${esc(j.title)}</h2><div class="meta">${running ? `<span class="spin" style="color:var(--primary)"></span>Running` : badge(j.status)}<span>${j.started_at ? `Started ${ago(j.started_at)}` : "Waiting to start"}${j.finished_at ? ` · finished ${ago(j.finished_at)}` : ""}${j.cost_usd ? ` · $${Number(j.cost_usd).toFixed(2)} of usage` : ""}${j.engine ? ` · ${esc(ENGINE_LABELS[j.engine] || j.engine)}` : ""}</span></div></div>
-        <div class="actions">${running ? `<button class="btn sm danger" data-cancel>${icon("stop", "sm")}Stop</button>` : ""}</div></div>
-      ${j.result ? `<div class="${j.status === "failed" ? "callout red" : "context"}" style="margin:16px 0">${icon(j.status === "failed" ? "alert" : "sparkles")}<div>${md(j.result)}</div></div>` : '<div style="height:16px"></div>'}
+        <div class="actions">${running ? `<button class="btn sm danger" data-cancel>${icon("stop", "sm")}Stop</button>`
+          : ["failed", "cancelled"].includes(j.status) ? `<button class="btn sm" data-rerun-same>${icon("refresh", "sm")}Run again</button><button class="btn sm primary" data-rerun-other>${icon("zap", "sm")}Run with another agent</button>` : ""}</div></div>
+      ${j.result ? `<div class="${j.status === "failed" ? "callout red" : "context"}" style="margin:16px 0">${icon(j.status === "failed" ? "alert" : "sparkles")}<div>${md(j.result)}${limitHit(j) ? `<div class="rerun-hint">${esc(ENGINE_LABELS[j.engine] || "This agent")} has hit its limit. Finish this task with another agent: <button class="btn sm primary" data-rerun-other>${icon("zap", "sm")}Run with another agent</button></div>` : ""}</div></div>` : '<div style="height:16px"></div>'}
       <div class="sect">${icon("activity", "sm")}Steps</div>
       <div class="log">${esc(stepsOnly(j) || (running ? `Starting ${ENGINE_LABELS[j.engine] || "the agent"}…` : "No output."))}</div>
       <details style="margin-top:14px"><summary style="color:var(--text-2);cursor:pointer">Instructions sent to the agent</summary><div class="log" style="margin-top:8px">${esc(j.prompt)}</div></details>`;
     const log = $(".log", el);
     if (atBottom) log.scrollTop = log.scrollHeight;
+    $$("[data-rerun-same]", el).forEach((b) => (b.onclick = () => rerunJob(j, false)));
+    $$("[data-rerun-other]", el).forEach((b) => (b.onclick = () => rerunJob(j, true)));
     const cancel = $("[data-cancel]", el);
     if (cancel) cancel.onclick = async () => { await api(`/api/jobs/${id}/cancel`, { method: "POST", body: {} }); toast("Stopping…"); };
     if (running) setTimeout(() => loadJob(id), 2000);
@@ -1246,7 +1397,7 @@ PAGES.settings = async () => {
   };
   $$("[data-key]").forEach((el) => (el.dataset.orig = String(el.type === "checkbox" ? el.checked : el.value)));
   wireModelPicker(main);
-  wireEngineCards(main, () => { refreshOverview(); render(); });
+  wireEngineCards(main, s.engines, (connected) => { if (connected !== null) { refreshOverview(); render(); } });
   $("#test-gmail").onclick = async () => {
     // Save a changed address or app password first: the test reads the saved settings.
     const body = {};
