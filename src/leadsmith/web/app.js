@@ -1116,7 +1116,7 @@ PAGES.settings = async () => {
        <div class="engines" role="radiogroup" aria-label="Agent engine">${s.engines.map((e) => `
          <label class="engine ${e.key === f.AGENT_ENGINE.value ? "on" : ""} ${e.installed ? "" : "missing"}">
            <input type="radio" name="engine" value="${e.key}" ${e.key === f.AGENT_ENGINE.value ? "checked" : ""}>
-           <span class="engine-main"><b>${esc(e.label)}</b><span class="engine-state"><span class="dot ${e.logged_in ? "green" : e.installed ? "amber" : "red"}"></span>${e.logged_in ? `Ready${e.auth_method ? ` · ${esc(e.auth_method)}` : ""}` : e.installed ? "Installed, signed out" : "Not installed"}</span></span>
+           <span class="engine-main"><span class="engine-name"><b>${esc(e.label)}</b>${e.key === f.AGENT_ENGINE.value ? '<span class="engine-tag">In use</span>' : '<span class="engine-tag next" hidden>Switches when you save</span>'}</span><span class="engine-state"><span class="dot ${e.logged_in ? "green" : e.installed ? "amber" : "red"}"></span>${e.logged_in ? `Signed in${e.auth_method ? ` · ${esc(e.auth_method)}` : ""}` : e.installed ? "Installed, signed out" : "Not installed"}</span></span>
            ${e.help ? `<span class="engine-help">${esc(e.help)}</span>` : ""}
          </label>`).join("")}</div>
        ${field("AGENT_MODEL", 'id="agent-model"')}`)}
@@ -1158,7 +1158,11 @@ PAGES.settings = async () => {
   };
   engineHint(f.AGENT_ENGINE.value);
   $$('input[name="engine"]').forEach((r) => (r.onchange = () => {
-    $$(".engine").forEach((l) => l.classList.toggle("on", l.contains(r)));
+    $$(".engine").forEach((l) => {
+      l.classList.toggle("on", l.contains(r));
+      const next = $(".engine-tag.next", l);
+      if (next) next.hidden = !l.contains(r);
+    });
     const hidden = $('[data-key="AGENT_ENGINE"]');
     if (hidden.value !== r.value) $("#agent-model").value = "";  // model names differ between engines
     hidden.value = r.value;
