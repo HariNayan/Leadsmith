@@ -34,6 +34,7 @@ ROLES = {
     "write": ["agents/outreach-writer.md"],
     "ideas": ["agents/outreach-writer.md"],
     "emails": ["agents/people-finder.md"],
+    "rewrite": ["agents/outreach-writer.md"],
 }
 SOLO_NOTE = """You don't have sub-agents. Wherever these instructions say to run or dispatch an agent (signal-scout,
 account-researcher, people-finder, outreach-writer, with or without a "leadsmith:" prefix), do that role's work yourself,
@@ -89,8 +90,8 @@ PROMPTS: dict[str, tuple[str, str]] = {
     "ideas": (
         "New ideas: {domains_short}",
         "For these accounts ({domains}): write 3 fresh ideas with save_ideas (different from the current ones, "
-        "keep any picked idea), then rewrite the unsent drafts so email 1 offers the new A/B/C menu, following the "
-        "outreach-writer agent. Don't touch sent emails.{extra}",
+        "keep any picked idea), then rewrite the unsent drafts around them in the email style brain_read gives "
+        "(email_style), following the outreach-writer agent. Don't touch sent emails.{extra}",
     ),
     "reply": (
         "Draft reply to {person}",
@@ -101,6 +102,15 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "the rough timeline and the one thing you need from them. If a price, date or result isn't in the brain, don't invent it: "
         "offer a short call (use the booking link from company.md if there is one) or ask one clarifying question. "
         "Under 140 words, plain text, warm and direct, matching voice.md. Don't send anything.{extra}",
+    ),
+    "rewrite": (
+        "Regenerate emails: {person}",
+        "Rewrite the unsent emails for {person} at {company} (contact id {contact_id}, account {domain}): {steps}. "
+        "First read brain_read (voice, email_style, step templates) and get_account('{domain}') (research, signals, ideas, "
+        "and every email already sent to them). {sent_line}Write fresh, better versions of those steps, following the "
+        "outreach-writer agent and the email style; don't just reword the old text. Save each with save_draft(contact_id="
+        "{contact_id}, step=...) using the same step numbers. Don't touch sent emails. The new versions go back to the user "
+        "for review; you can't approve or send.{extra}",
     ),
     "deck": (
         "Build decks: {domains_short}",
@@ -148,6 +158,25 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
                       domain=contact["domain"], reply_text=contact["last_reply"][:1500],
                       picked_line=f"They picked idea {picked['letter']}) {picked['title']}.\n" if picked else "")
         return PROMPTS["reply"][0].format(**values), PROMPTS["reply"][1].format(**values)
+    if kind == "rewrite":
+        contact = db.get_contact(int(params.get("contact_id") or 0))
+        if not contact:
+            raise ValueError("Pick a person to regenerate emails for.")
+        with db.connect() as conn:
+            acct = db.one(conn.execute("SELECT name FROM accounts WHERE domain = ?", (contact["domain"],))) or {}
+            steps = db.rows(conn.execute(
+                "SELECT step, status FROM drafts WHERE contact_id = ? AND channel = 'email' AND kind = 'sequence'"
+                " ORDER BY step", (contact["id"],)))
+        unsent = [s["step"] for s in steps if s["status"] in ("draft", "approved", "rejected")]
+        if not unsent:
+            raise ValueError("This person has no unsent emails to regenerate.")
+        sent = [s["step"] for s in steps if s["status"] == "sent"]
+        person = " ".join(p for p in (contact.get("first_name"), contact.get("last_name")) if p) or contact.get("email") or "this person"
+        values.update(person=person, company=acct.get("name") or contact["domain"], contact_id=contact["id"],
+                      domain=contact["domain"], steps=", ".join(f"step {n}" for n in unsent),
+                      sent_line=(f"Step {', '.join(map(str, sent))} already went out, so the new emails are follow-ups in "
+                                 "that same thread and must read naturally after it. ") if sent else "")
+        return PROMPTS["rewrite"][0].format(**values), PROMPTS["rewrite"][1].format(**values)
     if kind == "autofill" and not values["website"]:
         raise ValueError("Enter your website.")
     if kind == "custom" and not values["prompt"].strip():
@@ -160,9 +189,12 @@ def _append(job_id: int, text: str) -> None:
         conn.execute("UPDATE jobs SET log = substr(log || ?, -?) WHERE id = ?", (text, MAX_LOG, job_id))
 
 
-def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine) -> None:
+def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine, session: dict[str, Any] | None) -> None:
+    """`session` is the connection's shared conversation: {"session_id": ...}. The run continues it when it has an
+    id, and records the id the engine reports, so the next run in this connection continues the same conversation."""
+    resume = (session or {}).get("session_id")
     try:
-        cmd, extra_env = engine.command(engines.current_model())
+        cmd, extra_env = engine.command(engines.current_model(), resume)
     except OSError as exc:
         _finish(job_id, "failed", f"Could not prepare {engine.label}: {exc}", None)
         return
@@ -180,7 +212,7 @@ def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine) -> None:
     assert proc.stdin and proc.stdout
     proc.stdin.write(full_prompt(kind, prompt, engine))
     proc.stdin.close()
-    result_text, cost, error = "", 0.0, None
+    result_text, cost, error, seen_session = "", 0.0, None, None
     for line in proc.stdout:
         line = line.strip()
         if not line:
@@ -192,6 +224,12 @@ def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine) -> None:
             continue
         if not isinstance(event, dict):
             continue
+        if not seen_session and (sid := engine.session_of(event)):
+            seen_session = sid
+            with db.connect() as conn:
+                conn.execute("UPDATE jobs SET session_id = ? WHERE id = ?", (sid, job_id))
+            if session is not None:
+                session["session_id"] = sid
         parsed = engine.parse(event)
         if parsed.log:
             _append(job_id, parsed.log)
@@ -202,13 +240,16 @@ def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine) -> None:
         error = parsed.error or error
     proc.wait()
     stderr = (proc.stderr.read() if proc.stderr else "").strip()
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe:
+            pipe.close()
     _PROCS.pop(job_id, None)
     result_text = result_text.strip() or None
     spent = cost or None
     if _CANCELLED.pop(job_id, False):
         _finish(job_id, "cancelled", result_text or "Stopped by you.", spent)
     elif proc.returncode != 0 or error:
-        message = error or result_text or stderr[-1500:] or f"{engine.label} exited with code {proc.returncode}"
+        message = error or result_text or explain_failure(stderr, engine.label) or f"{engine.label} exited with code {proc.returncode}"
         if any(word in message.lower() for word in ("auth", "login", "log in", "sign in", "credential", "api key")):
             message += f"\n{engine.sign_in}"
         _finish(job_id, "failed", message, spent)
@@ -226,19 +267,83 @@ _PROCS: dict[int, subprocess.Popen] = {}
 _CANCELLED: dict[int, bool] = {}
 
 
-def start(kind: str, params: dict[str, Any], engine_key: str | None = None) -> dict[str, Any]:
+# Common reasons an engine stops, in plain words. Matched against its error output.
+FAILURE_HINTS = [
+    (r"\b503\b|high demand|overloaded|UNAVAILABLE", "The model's servers are busy right now (high demand). "
+     "This is on the provider's side: try again in a few minutes, or choose another model in Settings."),
+    (r"\b429\b|rate.?limit|quota|RESOURCE_EXHAUSTED|usage limit", "You've hit a usage or rate limit on this plan. "
+     "Wait for it to reset, or use Run with another agent to finish this task now."),
+    (r"ENOTFOUND|ECONNREFUSED|ETIMEDOUT|fetch failed|getaddrinfo|network", "Couldn't reach the model provider. "
+     "Check your internet connection and try again."),
+]
+
+
+def explain_failure(stderr: str, label: str) -> str:
+    """The useful part of an engine's error output: a plain-English reason plus the original message, without
+    stack traces or startup warnings."""
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not ln.startswith("at ") and not re.match(r"(?i)warning:|yolo mode|ripgrep|skill conflict", ln)]
+    if not lines:
+        return ""
+    hint = next((text for pattern, text in FAILURE_HINTS if re.search(pattern, stderr, re.I)), "")
+    detail = next((ln for ln in lines if re.search(r"(?i)error|failed|denied|invalid|not found", ln)), lines[-1])
+    detail = re.sub(r"\s+", " ", detail)[:400]
+    return f"{label}: {hint}\n\nDetails: {detail}" if hint else f"{label} stopped with an error.\n\nDetails: {detail}"
+
+
+def last_session(engine_key: str) -> dict[str, Any] | None:
+    """The most recent conversation this engine had in Leadsmith, for "continue previous session"."""
+    with db.connect() as conn:
+        return db.one(conn.execute(
+            "SELECT session_id, title, status, COALESCE(finished_at, started_at, created_at) AS at FROM jobs"
+            " WHERE engine = ? AND session_id IS NOT NULL ORDER BY id DESC LIMIT 1", (engine_key,)))
+
+
+def _session_busy(session_id: str) -> bool:
+    with db.connect() as conn:
+        return bool(conn.execute("SELECT 1 FROM jobs WHERE session_id = ? AND status IN ('queued', 'running')",
+                                 (session_id,)).fetchone())
+
+
+def start(kind: str, params: dict[str, Any], engine_key: str | None = None,
+          session: dict[str, Any] | None = None) -> dict[str, Any]:
     if kind not in PROMPTS:
         raise ValueError(f"Unknown job kind {kind}")
     engine = engines.ENGINES.get(engine_key or "") or engines.current()
     if not engine.path():
         raise ValueError(f"{engine.label} isn't installed. {engine.install}")
     title, prompt = _fmt(kind, params)
+    return _launch(kind, title, prompt, engine, session)
+
+
+def _launch(kind: str, title: str, prompt: str, engine: engines.Engine, session: dict[str, Any] | None) -> dict[str, Any]:
     with db.connect() as conn:
         cur = conn.execute("INSERT INTO jobs (kind, title, prompt, engine, created_at) VALUES (?, ?, ?, ?, ?)",
                            (kind, title, prompt, engine.key, db.now()))
         job_id = cur.lastrowid
-    threading.Thread(target=_run, args=(job_id, kind, prompt, engine), daemon=True).start()
+    # Two runs can't write to one conversation at once: while the session is busy, this run gets its own.
+    shared = session if not (session and session.get("session_id") and _session_busy(session["session_id"])) else None
+    threading.Thread(target=_run, args=(job_id, kind, prompt, engine, shared), daemon=True).start()
     return get(job_id) or {}
+
+
+RERUN_NOTE = ("\n\nNote: an earlier attempt at this task stopped part-way (for example the agent hit a usage limit). "
+              "Some of it may already be saved: check with get_account / list_drafts first, keep what's good, and finish "
+              "the rest instead of starting over or saving duplicates.")
+
+
+def rerun(job_id: int, engine_key: str, session: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run a finished, failed or stopped task again, on the given (possibly different) engine."""
+    old = get(job_id)
+    if not old:
+        raise ValueError("That run no longer exists.")
+    if old["status"] in ("queued", "running"):
+        raise ValueError("That run is still going.")
+    engine = engines.ENGINES.get(engine_key) or engines.current()
+    if not engine.path():
+        raise ValueError(f"{engine.label} isn't installed. {engine.install}")
+    prompt = old["prompt"] if RERUN_NOTE.strip() in old["prompt"] else old["prompt"] + RERUN_NOTE
+    return _launch(old["kind"], old["title"], prompt, engine, session)
 
 
 def cancel(job_id: int) -> bool:
@@ -262,7 +367,7 @@ def get(job_id: int) -> dict[str, Any] | None:
 def recent(limit: int = 30) -> list[dict[str, Any]]:
     with db.connect() as conn:
         return db.rows(conn.execute(
-            "SELECT id, kind, title, status, cost_usd, engine, started_at, finished_at, created_at,"
+            "SELECT id, kind, title, status, cost_usd, engine, session_id, started_at, finished_at, created_at,"
             " substr(result, 1, 400) AS result FROM jobs ORDER BY id DESC LIMIT ?", (limit,)
         ))
 
