@@ -11,6 +11,7 @@ import asyncio
 import csv
 import io
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -158,7 +159,8 @@ async def add_accounts(request: Request) -> Response:
             continue
         db.upsert_account(d, name=names[d], source="manual")
         added.append(d)
-    job = jobs.start("research", {"domains": added, "extra": data.get("extra")}, _require_engine()) if data.get("research") and added else None
+    job = jobs.start("research", {"domains": added, "extra": data.get("extra")}, _require_engine(),
+                     _connected["engine"]) if data.get("research") and added else None
     return ok({"added": added, "skipped_suppressed": [d for d in domains if known[d]["suppressed"]], "job": job})
 
 
@@ -212,7 +214,8 @@ async def get_templates(request: Request) -> Response:
                                          (contact["domain"],)))
             sample = {"who": f"{contact.get('first_name') or contact.get('email')} at {account.get('name') or contact['domain']}",
                       "values": templates.values_for(contact, account, ideas)}
-    return ok({"steps": templates.all_steps(), "placeholders": templates.PLACEHOLDERS, "sample": sample})
+    return ok({"steps": templates.all_steps(), "placeholders": templates.PLACEHOLDERS, "sample": sample,
+               "style": (config.get("EMAIL_STYLE") or "idea_menu").strip(), "deck_pdf": bool(decks.find_browser())})
 
 
 async def put_template(request: Request) -> Response:
@@ -357,8 +360,9 @@ async def update_draft(request: Request) -> Response:
         subject = data.get("subject", draft["subject"])
         text = data.get("body", draft["body"])
         attach = int(bool(data.get("attach_deck", draft["attach_deck"])))
+        attached = bool(attach) and decks.pdf_ready(contact.get("domain") or "")
         result = lint.check(subject, text, draft["step"], account.get("name"), contact.get("first_name"),
-                            kind=draft.get("kind") or "sequence")
+                            kind=draft.get("kind") or "sequence", attached=attached)
         content_changed = subject != draft["subject"] or text != draft["body"]
         status = "draft" if content_changed else draft["status"]
         conn.execute("UPDATE drafts SET subject = ?, body = ?, attach_deck = ?, lint = ?, status = ?, updated_at = ?"
@@ -390,6 +394,9 @@ def _review(ids: list[int], action: str) -> dict[str, Any]:
             continue
         if action == "approve" and draft["lint"] and not draft["lint"].get("ok", True):
             refused.append({"id": draft["id"], "reason": "Fix the red issues first."})
+        elif action == "approve" and lint.claims_attachment(draft["body"]) and not (
+                draft.get("attach_deck") and decks.pdf_ready(draft["domain"])):
+            refused.append({"id": draft["id"], "reason": "It says a deck is attached, but none is. Tick Attach deck or edit the line."})
         elif action == "approve" and not draft.get("email") and draft["channel"] == "email":
             refused.append({"id": draft["id"], "reason": "This contact has no email address."})
         elif draft["status"] in ("sent", "cancelled"):
@@ -491,6 +498,35 @@ async def verify_contact(request: Request) -> Response:
     return ok(result)
 
 
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[a-z]{2,}", re.I)
+
+
+async def edit_contact_email(request: Request) -> Response:
+    """The user typed the right address. It's trusted ('manual'); approved unsent emails go back to review,
+    because they were approved for a different recipient."""
+    contact_id = int(request.path_params["id"])
+    email = str((await body(request)).get("email") or "").strip().lower()
+    if not EMAIL_RE.fullmatch(email):
+        raise ApiError("That doesn't look like an email address.")
+    contact = db.get_contact(contact_id)
+    if not contact:
+        raise ApiError("Unknown person", 404)
+    if email == (contact.get("email") or "").lower():
+        return ok({"email": email, "paused": 0, "unchanged": True})
+    if db.is_suppressed(email):
+        raise ApiError(f"{email} is on your do-not-contact list.")
+    try:
+        updated = db.set_contact_email(contact_id, email, "manual", f"Email changed by you from {contact.get('email') or 'none'}")
+    except ValueError as e:
+        raise ApiError(str(e)) from e
+    with db.connect() as conn:
+        paused = conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'approved'",
+                              (db.now(), contact_id)).rowcount
+        if contact.get("status") == "bounced":  # a new address deserves a new try
+            conn.execute("UPDATE contacts SET status = 'drafted' WHERE id = ?", (contact_id,))
+    return ok({"email": updated.get("email"), "paused": paused})
+
+
 async def contact_status(request: Request) -> Response:
     status = (await body(request)).get("status")
     contact_id = int(request.path_params["id"])
@@ -517,12 +553,27 @@ async def list_jobs(request: Request) -> Response:
 async def create_job(request: Request) -> Response:
     data = await body(request)
     key = _require_engine()
-    return ok(jobs.start(data.pop("kind", ""), data, key))
+    kind = data.pop("kind", "")
+    if kind == "rewrite":
+        # Take this person's approved, unsent emails out of the send queue first, so an automatic follow-up can't
+        # go out while the agent is rewriting it. The new versions come back as drafts for review.
+        contact_id = int(data.get("contact_id") or 0)
+        job = jobs.start(kind, data, key, _connected["engine"])  # validates the person first
+        with db.connect() as conn:
+            paused = conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'approved'"
+                                  " AND kind = 'sequence'", (db.now(), contact_id)).rowcount
+        db.log_event("regenerate", f"{paused} approved email(s) back to review", contact_id)
+        return ok({**job, "paused": paused})
+    return ok(jobs.start(kind, data, key, _connected["engine"]))
 
 
 async def connect_engine(request: Request) -> Response:
     """Check one engine's sign-in (this starts its CLI once) and use it for this session."""
-    key = str((await body(request)).get("engine") or "").strip().lower()
+    data = await body(request)
+    key = str(data.get("engine") or "").strip().lower()
+    mode = data.get("session") or "new"
+    if mode not in ("new", "continue"):
+        raise ApiError("Choose a new session or continue the previous one.")
     engine = engines.ENGINES.get(key)
     if not engine:
         raise ApiError(f"Unknown agent {key}.")
@@ -532,6 +583,12 @@ async def connect_engine(request: Request) -> Response:
     if not status["logged_in"]:
         raise ApiError(f"{engine.label} is installed but signed out. {engine.sign_in}")
     status["models"] = await asyncio.to_thread(engine.models)
+    previous = jobs.last_session(key) if mode == "continue" else None
+    if mode == "continue" and not previous:
+        raise ApiError(f"There's no previous {engine.label} session to continue yet. Start a new one.")
+    # The connection holds one conversation: runs continue it, and each run updates its id.
+    status.update(session_mode=mode, session_id=previous["session_id"] if previous else None,
+                  session_from=previous)
     _connected["engine"] = status
     if engines.current().key != key:
         config.save_env({"AGENT_ENGINE": key, "AGENT_MODEL": ""})  # model names differ between engines
@@ -543,8 +600,27 @@ async def disconnect_engine(request: Request) -> Response:
     return ok(engine_overview())
 
 
+def _engine_list() -> list[dict[str, Any]]:
+    return [{**e.info(), "last_session": jobs.last_session(e.key)} for e in engines.ENGINES.values()]
+
+
 async def list_engines(request: Request) -> Response:
-    return ok({"engines": [e.info() for e in engines.ENGINES.values()], "engine": engine_overview()})
+    return ok({"engines": _engine_list(), "engine": engine_overview()})
+
+
+async def rerun_job(request: Request) -> Response:
+    """Run a failed or stopped task again on the agent that's connected now (the user may have just switched)."""
+    key = _require_engine()
+    old = jobs.get(int(request.path_params["id"]))
+    if old and old["kind"] == "rewrite":  # same safety as the first run: nothing goes out while it's rewritten
+        contact_id = next((int(m) for m in re.findall(r"contact id (\d+)", old["prompt"])), 0)
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'approved'"
+                         " AND kind = 'sequence'", (db.now(), contact_id))
+    try:
+        return ok(jobs.rerun(int(request.path_params["id"]), key, _connected["engine"]))
+    except ValueError as e:
+        raise ApiError(str(e)) from e
 
 
 async def get_job(request: Request) -> Response:
@@ -560,7 +636,7 @@ async def cancel_job(request: Request) -> Response:
 
 async def get_settings(request: Request) -> Response:
     return ok({"settings": config.public_settings(), "engine": engine_overview(),
-               "engines": [e.info() for e in engines.ENGINES.values()],
+               "engines": _engine_list(),
                "browser": decks.find_browser(), "workspace": str(config.HOME), "env_file": str(config.ENV_FILE)})
 
 
@@ -580,6 +656,8 @@ async def put_settings(request: Request) -> Response:
                 value = str(max(0, int(value)))
             except (TypeError, ValueError):
                 raise ApiError(f"{config.SETTINGS[key][0]} must be a number.")
+        if key == "EMAIL_STYLE" and value not in ("idea_menu", "personal_pitch"):
+            raise ApiError("Email style must be idea_menu or personal_pitch.")
         if key == "AGENT_ENGINE":
             value = str(value).strip().lower()
             if value not in engines.ENGINES:
@@ -713,6 +791,7 @@ def create_app(port: int = 4600):
         Route("/api/send/stop", _wrap(send_stop), methods=["POST"]),
         Route("/api/replies", _wrap(replies), methods=["POST"]),
         Route("/api/contacts/{id:int}/verify", _wrap(verify_contact), methods=["POST"]),
+        Route("/api/contacts/{id:int}/email", _wrap(edit_contact_email), methods=["PUT"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
         Route("/api/engines", _wrap(list_engines)),
         Route("/api/engines/connect", _wrap(connect_engine), methods=["POST"]),
@@ -720,6 +799,7 @@ def create_app(port: int = 4600):
         Route("/api/jobs", _wrap(list_jobs)),
         Route("/api/jobs", _wrap(create_job), methods=["POST"]),
         Route("/api/jobs/{id:int}", _wrap(get_job)),
+        Route("/api/jobs/{id:int}/rerun", _wrap(rerun_job), methods=["POST"]),
         Route("/api/jobs/{id:int}/cancel", _wrap(cancel_job), methods=["POST"]),
         Route("/api/settings", _wrap(get_settings)),
         Route("/api/settings", _wrap(put_settings), methods=["PUT"]),
