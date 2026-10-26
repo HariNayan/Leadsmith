@@ -76,7 +76,7 @@ function toast(message, type = "ok", ms = 4500) {
   $("#toasts").appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
-const fail = (e) => toast(esc(e.message || e), "error", 7000);
+const fail = (e) => { if (!e?.silent) toast(esc(e.message || e), "error", 7000); };
 
 function ago(iso) {
   if (!iso) return "";
@@ -176,7 +176,67 @@ function modal({ title, intro = "", art = "", body = "", confirm = "OK", cancel 
   if (first) first.focus();
 }
 
+function engineCards(list, current) {
+  return `<div class="engines">${list.map((e) => {
+    const on = current.connected && current.key === e.key;
+    const last = !current.connected && current.key === e.key;
+    return `<div class="engine ${on ? "on" : ""} ${e.installed ? "" : "missing"}">
+      <span class="engine-main"><span class="engine-name"><b>${esc(e.label)}</b>${on ? '<span class="engine-tag">Connected</span>' : last ? '<span class="engine-tag last">Last used</span>' : ""}</span>
+        <span class="engine-state"><span class="dot ${on ? "green" : e.installed ? "grey" : "red"}"></span>${on ? `Running on ${esc(e.plan)}` : e.installed ? "Installed · not connected" : "Not installed"}</span>
+        ${e.installed ? "" : `<span class="engine-help">${esc(e.install)}</span>`}</span>
+      <span class="engine-act">${on ? `<button class="btn sm" data-disconnect>Disconnect</button>`
+        : e.installed ? `<button class="btn sm ${last ? "primary" : ""}" data-connect="${e.key}">Connect</button>` : ""}</span>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+function wireEngineCards(root, after) {
+  $$("[data-connect]", root).forEach((b) => (b.onclick = async () => {
+    const label = b.closest(".engine").querySelector("b").textContent;
+    b.disabled = true; b.textContent = "Checking…";
+    try {
+      await api("/api/engines/connect", { method: "POST", body: { engine: b.dataset.connect } });
+      toast(`${esc(label)} connected`);
+      after(true);
+    } catch (e) { fail(e); b.disabled = false; b.textContent = "Connect"; }
+  }));
+  $$("[data-disconnect]", root).forEach((b) => (b.onclick = async () => {
+    await api("/api/engines/disconnect", { method: "POST", body: {} });
+    toast("Agent disconnected. Nothing runs until you connect one again.");
+    after(false);
+  }));
+}
+
+// Runs need a connected agent. If none is, ask which one to connect, then carry on.
+function ensureEngine() {
+  if (state.overview?.engine?.connected) return Promise.resolve(true);
+  return new Promise(async (resolve) => {
+    let data;
+    try { data = await api("/api/engines"); } catch (e) { fail(e); return resolve(false); }
+    let done = false;
+    modal({
+      title: "Connect an agent to run this", art: "zap", wide: true, confirm: null, cancel: "Cancel",
+      intro: "Leadsmith only uses an agent you connect, one at a time. It stays connected until you disconnect it or restart the dashboard.",
+      body: engineCards(data.engines, data.engine),
+    });
+    const root = $("#modal-root");
+    wireEngineCards(root, async (connected) => {
+      if (!connected) return;
+      done = true;
+      await refreshOverview();
+      root.innerHTML = "";
+      resolve(true);
+    });
+    // Closing the prompt without connecting cancels the run.
+    const watch = new MutationObserver(() => { if (!root.innerHTML && !done) { watch.disconnect(); resolve(false); } });
+    watch.observe(root, { childList: true });
+  });
+}
+
+const cancelled = Object.assign(new Error("cancelled"), { silent: true });
+
 async function startJob(kind, params, { quiet = false } = {}) {
+  if (!(await ensureEngine())) throw cancelled;
   const job = await api("/api/jobs", { method: "POST", body: { kind, ...params } });
   state.jobsSeen[job.id] = "running";
   if (!quiet) toast(`Started “${esc(job.title)}”. <a href="#/activity">View run</a>`);
@@ -214,7 +274,7 @@ async function refreshOverview() {
     const c = o.engine || {};
     const brainOk = Object.values(o.brain).every((b) => b.complete);
     $("#health").innerHTML = [
-      `<a href="#/settings"><span class="dot ${c.logged_in ? "green" : "red"}"></span>${esc(c.label || "Agent engine")} ${c.logged_in ? "connected" : c.installed ? "signed out" : "not installed"}</a>`,
+      `<a href="#/settings"><span class="dot ${c.connected ? "green" : "amber"}"></span>${c.connected ? `${esc(c.label)} connected` : "No agent connected"}</a>`,
       `<a href="#/settings"><span class="dot ${o.mail.app_password_set ? (o.mail.send_enabled ? "green" : "amber") : "amber"}"></span>${o.mail.app_password_set ? (o.mail.send_enabled ? "Gmail connected · sending on" : "Gmail connected · sending paused") : "Gmail not connected"}</a>`,
       `<a href="#/business"><span class="dot ${brainOk ? "green" : "amber"}"></span>Profile ${brainOk ? "complete" : "incomplete"}</a>`,
       o.mail.test_recipient ? `<a href="#/settings" title="Every email goes to ${esc(o.mail.test_recipient)}"><span class="dot blue"></span>Test mode on</a>` : "",
@@ -278,7 +338,7 @@ PAGES.home = async () => {
   const toReview = new Set(drafts.map((d) => d.contact_id)).size;
   const sentLimit = o.mail?.daily_limit || 25;
   const setup = [];
-  if (o.engine && !o.engine.logged_in) setup.push(["alert", `${o.engine.installed ? "Sign in to" : "Install"} ${o.engine.label}`, o.engine.help || "", "#/settings"]);
+  if (o.engine && !o.engine.connected) setup.push(["zap", "Connect an agent", "Claude Code, Codex, OpenCode or Gemini CLI. Nothing runs until you connect one.", "#/settings"]);
   if (o.brain && !Object.values(o.brain).every((b) => b.complete)) setup.push(["card", "Finish your business profile", "Agents use it to pick targets and write emails.", "#/business"]);
   if (!o.mail?.app_password_set) setup.push(["mail", "Connect Gmail", "Send approved emails and track replies.", "#/settings"]);
   setTop("home", "Home");
@@ -287,7 +347,7 @@ PAGES.home = async () => {
     <div class="ask">
       <textarea id="ask" rows="2" placeholder="Find 10 seed-stage fintechs in India hiring their first sales rep and draft emails to the founders" aria-label="Ask the agents"></textarea>
       <div class="ask-foot">
-        <span class="hint">Runs on ${esc(o.engine?.plan || "your own plan")} · nothing is sent without you</span>
+        <span class="hint">${o.engine?.connected ? `Runs on ${esc(o.engine.label)} · ${esc(o.engine.plan)}` : "No agent connected yet: you'll pick one when you run"} · nothing is sent without you</span>
         ${(homeSug.suggestions.length ? homeSug.suggestions.slice(0, 3).map((x) => `<button class="suggest" data-suggest="Find 10 buyers: ${esc(x.query)}" title="${esc(x.query)}">${icon("sparkles", "sm")}${esc(x.label)}</button>`).join("")
           : `<button class="suggest" data-suggest="Find 10 B2B SaaS companies in the US that raised a Series A in the last 60 days and are hiring sales reps">${icon("zap", "sm")}Just raised + hiring</button>
         <button class="suggest" data-suggest="Find 10 YC companies hiring their first growth marketer">${icon("users", "sm")}YC, first marketer</button>`)}
@@ -599,7 +659,10 @@ function addCompaniesModal() {
     body: `<textarea id="a-domains" rows="7" placeholder="acme.com&#10;Sharma Sweets, Pune&#10;owner.bakery@gmail.com" aria-label="Companies"></textarea>
       <label class="check"><input type="checkbox" id="a-research" checked> Research them and draft emails now</label>`,
     onConfirm: async (root) => {
-      const r = await api("/api/accounts", { method: "POST", body: { domains: $("#a-domains", root).value, research: $("#a-research", root).checked } });
+      const research = $("#a-research", root).checked;
+      const domains = $("#a-domains", root).value;
+      if (research && !(await ensureEngine())) throw cancelled;
+      const r = await api("/api/accounts", { method: "POST", body: { domains, research } });
       toast(`Added ${plural(r.added.length, "company", "companies")}${r.skipped_suppressed.length ? `, skipped ${r.skipped_suppressed.length} on your do-not-contact list` : ""}`);
       render();
     },
@@ -1112,13 +1175,8 @@ PAGES.settings = async () => {
   setTop("settings", "Settings", "", `<button class="btn primary" id="save-settings">Save changes</button>`);
   main.innerHTML = `<div class="page settings">
     ${set("Agent engine", "The coding agent that runs the four agents, on your own plan. No API key needed in Leadsmith.",
-      `<input type="hidden" data-key="AGENT_ENGINE" value="${esc(f.AGENT_ENGINE.value)}">
-       <div class="engines" role="radiogroup" aria-label="Agent engine">${s.engines.map((e) => `
-         <label class="engine ${e.key === f.AGENT_ENGINE.value ? "on" : ""} ${e.installed ? "" : "missing"}">
-           <input type="radio" name="engine" value="${e.key}" ${e.key === f.AGENT_ENGINE.value ? "checked" : ""}>
-           <span class="engine-main"><span class="engine-name"><b>${esc(e.label)}</b>${e.key === f.AGENT_ENGINE.value ? '<span class="engine-tag">In use</span>' : '<span class="engine-tag next" hidden>Switches when you save</span>'}</span><span class="engine-state"><span class="dot ${e.logged_in ? "green" : e.installed ? "amber" : "red"}"></span>${e.logged_in ? `Signed in${e.auth_method ? ` · ${esc(e.auth_method)}` : ""}` : e.installed ? "Installed, signed out" : "Not installed"}</span></span>
-           ${e.help ? `<span class="engine-help">${esc(e.help)}</span>` : ""}
-         </label>`).join("")}</div>
+      `<p class="help" style="margin:0 0 10px">One agent at a time, and only when you connect it. Nothing starts on its own: after you restart the dashboard, connect again.</p>
+       ${engineCards(s.engines, s.engine)}
        ${field("AGENT_MODEL", 'id="agent-model"')}`)}
     ${set("Gmail", "Emails go out from your own inbox, so replies land there too.",
       `${field("GMAIL_ADDRESS")}${field("GMAIL_APP_PASSWORD", 'autocomplete="new-password"')}
@@ -1152,22 +1210,9 @@ PAGES.settings = async () => {
     try { await api("/api/settings", { method: "PUT", body }); toast("Settings saved"); refreshOverview(); render(); } catch (e) { fail(e); }
   };
   $$("[data-key]").forEach((el) => (el.dataset.orig = String(el.type === "checkbox" ? el.checked : el.value)));
-  const engineHint = (key) => {
-    const e = s.engines.find((x) => x.key === key) || {};
-    $("#agent-model").placeholder = e.model_hint ? `Default model · ${e.model_hint}` : "Default model";
-  };
-  engineHint(f.AGENT_ENGINE.value);
-  $$('input[name="engine"]').forEach((r) => (r.onchange = () => {
-    $$(".engine").forEach((l) => {
-      l.classList.toggle("on", l.contains(r));
-      const next = $(".engine-tag.next", l);
-      if (next) next.hidden = !l.contains(r);
-    });
-    const hidden = $('[data-key="AGENT_ENGINE"]');
-    if (hidden.value !== r.value) $("#agent-model").value = "";  // model names differ between engines
-    hidden.value = r.value;
-    engineHint(r.value);
-  }));
+  const hintFor = s.engines.find((x) => x.key === s.engine.key) || {};
+  $("#agent-model").placeholder = hintFor.model_hint ? `Default model · ${hintFor.model_hint}` : "Default model";
+  wireEngineCards(main, () => { refreshOverview(); render(); });
   $("#test-gmail").onclick = async () => {
     // Save a changed address or app password first: the test reads the saved settings.
     const body = {};

@@ -692,6 +692,56 @@ class LintAcronymTests(unittest.TestCase):
         self.assertNotIn("caps", {i["rule"] for i in result["issues"]})
 
 
+class EngineConnectTests(unittest.TestCase):
+    """No agent runs or is even checked until the user connects one, and only one at a time."""
+
+    def setUp(self):
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard
+
+        dashboard._connected["engine"] = None
+        self.dash = dashboard
+        self.c = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+
+    def tearDown(self):
+        self.dash._connected["engine"] = None
+
+    def test_nothing_is_started_until_the_user_connects(self):
+        from unittest import mock
+
+        from leadsmith import engines
+
+        with mock.patch.object(engines.Engine, "status", side_effect=AssertionError("must not start an engine")) as status:
+            overview = self.c.get("/api/overview").json()
+            settings = self.c.get("/api/settings").json()
+        status.assert_not_called()
+        self.assertFalse(overview["engine"]["connected"])
+        self.assertEqual(len(settings["engines"]), 4)
+        r = self.c.post("/api/jobs", json={"kind": "ideas", "domains": ["acme.io"]})
+        self.assertEqual(r.status_code, 409)
+        self.assertIn("Connect an agent", r.json()["error"])
+
+    def test_connect_one_engine_then_disconnect(self):
+        from unittest import mock
+
+        from leadsmith import engines
+
+        ready = {"key": "codex", "label": "Codex", "plan": "your ChatGPT plan", "installed": True, "logged_in": True}
+        with mock.patch.object(engines.Codex, "status", return_value=ready), \
+             mock.patch.dict(os.environ, {"AGENT_ENGINE": "claude"}), \
+             mock.patch.object(self.dash.config, "save_env") as save:
+            self.assertTrue(self.c.post("/api/engines/connect", json={"engine": "codex"}).json()["connected"])
+            save.assert_called_once()
+        self.assertEqual(self.c.get("/api/overview").json()["engine"]["key"], "codex")
+        signed_out = {**ready, "logged_in": False}
+        with mock.patch.object(engines.Gemini, "status", return_value=signed_out):
+            self.assertEqual(self.c.post("/api/engines/connect", json={"engine": "gemini"}).status_code, 400)
+        self.assertEqual(self.c.get("/api/overview").json()["engine"]["key"], "codex")  # still the one connected
+        self.c.post("/api/engines/disconnect", json={})
+        self.assertFalse(self.c.get("/api/overview").json()["engine"]["connected"])
+
+
 class GmailFriendlyTests(unittest.TestCase):
     def client(self):
         from starlette.testclient import TestClient

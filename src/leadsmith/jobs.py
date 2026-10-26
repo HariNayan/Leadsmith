@@ -119,11 +119,6 @@ PROMPTS: dict[str, tuple[str, str]] = {
 }
 
 
-def engine_status() -> dict[str, Any]:
-    """Status of the engine chosen in Settings."""
-    return engines.current().status()
-
-
 def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
     title_t, prompt_t = PROMPTS[kind]
     domains = [db.normalize_domain(d) for d in params.get("domains") or [] if d.strip()]
@@ -165,8 +160,7 @@ def _append(job_id: int, text: str) -> None:
         conn.execute("UPDATE jobs SET log = substr(log || ?, -?) WHERE id = ?", (text, MAX_LOG, job_id))
 
 
-def _run(job_id: int, kind: str, prompt: str) -> None:
-    engine = engines.current()
+def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine) -> None:
     try:
         cmd, extra_env = engine.command(engines.current_model())
     except OSError as exc:
@@ -177,7 +171,8 @@ def _run(job_id: int, kind: str, prompt: str) -> None:
         conn.execute("UPDATE jobs SET status = 'running', started_at = ? WHERE id = ?", (db.now(), job_id))
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding="utf-8", errors="replace", env=env, cwd=str(config.HOME))
+                                text=True, encoding="utf-8", errors="replace", env=env, cwd=str(config.HOME),
+                                creationflags=engines.NO_WINDOW)
     except OSError as exc:
         _finish(job_id, "failed", f"Could not start {engine.label}: {exc}", None)
         return
@@ -231,10 +226,10 @@ _PROCS: dict[int, subprocess.Popen] = {}
 _CANCELLED: dict[int, bool] = {}
 
 
-def start(kind: str, params: dict[str, Any]) -> dict[str, Any]:
+def start(kind: str, params: dict[str, Any], engine_key: str | None = None) -> dict[str, Any]:
     if kind not in PROMPTS:
         raise ValueError(f"Unknown job kind {kind}")
-    engine = engines.current()
+    engine = engines.ENGINES.get(engine_key or "") or engines.current()
     if not engine.path():
         raise ValueError(f"{engine.label} isn't installed. {engine.install}")
     title, prompt = _fmt(kind, params)
@@ -242,7 +237,7 @@ def start(kind: str, params: dict[str, Any]) -> dict[str, Any]:
         cur = conn.execute("INSERT INTO jobs (kind, title, prompt, engine, created_at) VALUES (?, ?, ?, ?, ?)",
                            (kind, title, prompt, engine.key, db.now()))
         job_id = cur.lastrowid
-    threading.Thread(target=_run, args=(job_id, kind, prompt), daemon=True).start()
+    threading.Thread(target=_run, args=(job_id, kind, prompt, engine), daemon=True).start()
     return get(job_id) or {}
 
 

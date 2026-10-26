@@ -47,9 +47,14 @@ def mcp_server() -> dict[str, Any]:
             "env": {"LEADSMITH_HOME": str(config.HOME)}}
 
 
+# On Windows, never flash a console window when an engine is checked or run.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _run_quiet(cmd: list[str], timeout: int = 20) -> subprocess.CompletedProcess | None:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+                              creationflags=NO_WINDOW)
     except (OSError, subprocess.TimeoutExpired):
         return None
 
@@ -79,7 +84,13 @@ class Engine:
     def path(self) -> str | None:
         return shutil.which(self.binary)
 
+    def info(self) -> dict[str, Any]:
+        """What Leadsmith knows without starting the engine: just whether it's installed."""
+        return {"key": self.key, "label": self.label, "plan": self.plan, "model_hint": self.model_hint,
+                "installed": bool(self.path()), "install": self.install}
+
     def status(self) -> dict[str, Any]:
+        """Starts the CLI once to check sign-in. Only called when the user clicks Connect."""
         path = self.path()
         base = {"key": self.key, "label": self.label, "plan": self.plan, "model_hint": self.model_hint}
         if not path:

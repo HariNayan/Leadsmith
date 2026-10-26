@@ -11,7 +11,6 @@ import asyncio
 import csv
 import io
 import json
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,7 +29,9 @@ from .brain import BRAIN_FILES, read_brain, suggest_searches, write_brain
 WEB_DIR = Path(__file__).parent / "web"
 FREE_MAIL = db.FREE_MAIL
 
-_engine_cache: dict[str, dict[str, Any]] = {}  # engine key -> {"at": time, "value": status}
+# The engine the user connected in this dashboard session. Nothing is connected at start, and nothing is
+# checked in the background: the user clicks Connect (or is asked to when they start a run).
+_connected: dict[str, Any] = {"engine": None}
 _scheduler: dict[str, Any] = {"last_run": None, "last_result": None}
 
 
@@ -52,16 +53,19 @@ async def body(request: Request) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def engine_status(key: str | None = None, force: bool = False) -> dict[str, Any]:
-    # A signed-in result is kept for a minute; a failed check (e.g. the CLI still starting up
-    # after a reboot) is retried after a few seconds instead of showing "signed out" for a minute.
-    engine = engines.ENGINES.get(key or "") or engines.current()
-    entry = _engine_cache.get(engine.key) or {}
-    cached = entry.get("value")
-    max_age = 60 if cached and cached.get("logged_in") else 5
-    if force or not cached or time.time() - entry.get("at", 0) > max_age:
-        _engine_cache[engine.key] = {"at": time.time(), "value": engine.status()}
-    return _engine_cache[engine.key]["value"]
+def engine_overview() -> dict[str, Any]:
+    """The connected engine, or the last one used (not connected). Never starts an engine."""
+    if _connected["engine"]:
+        return {**_connected["engine"], "connected": True}
+    last = engines.current()
+    return {**last.info(), "connected": False, "logged_in": False,
+            "help": "No agent connected. Connect one in Settings → Agent engine before running the agents."}
+
+
+def _require_engine() -> str:
+    if not _connected["engine"]:
+        raise ApiError("Connect an agent first: Settings → Agent engine.", 409)
+    return _connected["engine"]["key"]
 
 
 # ── overview, brain ─────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ async def overview(request: Request) -> Response:
         replied = conn.execute("SELECT COUNT(*) FROM contacts WHERE status IN ('replied', 'meeting')").fetchone()[0]
     return ok({
         "workspace": str(config.HOME),
-        "engine": await asyncio.to_thread(engine_status),
+        "engine": engine_overview(),
         "mail": mailer.mail_status(),
         "brain": {k: {"complete": v["complete"], "todos": v["todos_left"]} for k, v in brain.items()},
         "counts": db.counts(),
@@ -145,6 +149,8 @@ async def add_accounts(request: Request) -> Response:
     domains = list(names)
     if not domains:
         raise ApiError("Enter at least one website, business name or email.")
+    if data.get("research"):
+        _require_engine()  # before adding anything, so a missing agent doesn't leave half the work done
     known = db.known(domains)
     added = []
     for d in domains:
@@ -152,7 +158,7 @@ async def add_accounts(request: Request) -> Response:
             continue
         db.upsert_account(d, name=names[d], source="manual")
         added.append(d)
-    job = jobs.start("research", {"domains": added, "extra": data.get("extra")}) if data.get("research") and added else None
+    job = jobs.start("research", {"domains": added, "extra": data.get("extra")}, _require_engine()) if data.get("research") and added else None
     return ok({"added": added, "skipped_suppressed": [d for d in domains if known[d]["suppressed"]], "job": job})
 
 
@@ -510,10 +516,34 @@ async def list_jobs(request: Request) -> Response:
 
 async def create_job(request: Request) -> Response:
     data = await body(request)
-    status = engine_status(force=True)
-    if not status.get("logged_in"):
-        raise ApiError(status.get("help") or f"{status['label']} isn't ready.")
-    return ok(jobs.start(data.pop("kind", ""), data))
+    key = _require_engine()
+    return ok(jobs.start(data.pop("kind", ""), data, key))
+
+
+async def connect_engine(request: Request) -> Response:
+    """Check one engine's sign-in (this starts its CLI once) and use it for this session."""
+    key = str((await body(request)).get("engine") or "").strip().lower()
+    engine = engines.ENGINES.get(key)
+    if not engine:
+        raise ApiError(f"Unknown agent {key}.")
+    status = await asyncio.to_thread(engine.status)
+    if not status["installed"]:
+        raise ApiError(f"{engine.label} isn't installed. {engine.install}")
+    if not status["logged_in"]:
+        raise ApiError(f"{engine.label} is installed but signed out. {engine.sign_in}")
+    _connected["engine"] = status
+    if engines.current().key != key:
+        config.save_env({"AGENT_ENGINE": key, "AGENT_MODEL": ""})  # model names differ between engines
+    return ok({**status, "connected": True})
+
+
+async def disconnect_engine(request: Request) -> Response:
+    _connected["engine"] = None
+    return ok(engine_overview())
+
+
+async def list_engines(request: Request) -> Response:
+    return ok({"engines": [e.info() for e in engines.ENGINES.values()], "engine": engine_overview()})
 
 
 async def get_job(request: Request) -> Response:
@@ -528,9 +558,8 @@ async def cancel_job(request: Request) -> Response:
 
 
 async def get_settings(request: Request) -> Response:
-    # Cached: a signed-in engine is re-checked after a minute, a signed-out one after a few seconds.
-    statuses = await asyncio.gather(*(asyncio.to_thread(engine_status, key) for key in engines.ENGINES))
-    return ok({"settings": config.public_settings(), "engine": engine_status(), "engines": statuses,
+    return ok({"settings": config.public_settings(), "engine": engine_overview(),
+               "engines": [e.info() for e in engines.ENGINES.values()],
                "browser": decks.find_browser(), "workspace": str(config.HOME), "env_file": str(config.ENV_FILE)})
 
 
@@ -684,6 +713,9 @@ def create_app(port: int = 4600):
         Route("/api/replies", _wrap(replies), methods=["POST"]),
         Route("/api/contacts/{id:int}/verify", _wrap(verify_contact), methods=["POST"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
+        Route("/api/engines", _wrap(list_engines)),
+        Route("/api/engines/connect", _wrap(connect_engine), methods=["POST"]),
+        Route("/api/engines/disconnect", _wrap(disconnect_engine), methods=["POST"]),
         Route("/api/jobs", _wrap(list_jobs)),
         Route("/api/jobs", _wrap(create_job), methods=["POST"]),
         Route("/api/jobs/{id:int}", _wrap(get_job)),

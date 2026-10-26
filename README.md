@@ -178,7 +178,7 @@ uv run leadsmith doctor
 
 ## Choose your agent engine
 
-Leadsmith works with any of these. Install one, sign in once in a terminal, then pick it in **Settings → Agent engine**. Settings shows which ones are installed and signed in.
+Leadsmith works with any of these. Install one and sign in once in a terminal. Then click **Connect** next to it in **Settings → Agent engine**. If you start a run with no agent connected, Leadsmith asks you to connect one first. Only one agent is connected at a time, and only after you connect it: Leadsmith never starts or checks an agent in the background, and after you restart the dashboard you connect again.
 
 | Engine | Install | Sign in | Notes |
 |---|---|---|---|

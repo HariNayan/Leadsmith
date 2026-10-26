@@ -449,7 +449,7 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 
 /* ── agent engine picker ──────────────────────────── */
 .engines { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
-.engine { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 10px; align-items: start; border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; cursor: pointer; background: var(--bg); }
+.engine { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; border: 1px solid var(--border); border-radius: 9px; padding: 10px 12px; cursor: pointer; background: var(--bg); }
 .engine:hover { border-color: var(--text-3); }
 .engine.on { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
 .engine input { margin-top: 3px; accent-color: var(--primary); }
@@ -460,3 +460,10 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .engine-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .engine-tag { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
 .engine-tag.next { background: var(--amber-bg, var(--hover)); color: var(--amber, var(--text-2)); border-color: var(--amber-bd, var(--border)); }
+
+.engine { cursor: default; }
+.engine-act { display: flex; gap: 6px; }
+.engine-tag.last { background: var(--hover); color: var(--text-2); border-color: var(--border); }
+.engine-help { grid-column: 1; }
+.dot.grey { background: var(--text-3); }
+.modal .engines { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
