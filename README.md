@@ -187,7 +187,7 @@ Leadsmith works with any of these. Install one and sign in once in a terminal. T
 | **[OpenCode](https://opencode.ai)** | `npm install -g opencode-ai` | `opencode auth login` | Any provider you've added (Anthropic, OpenAI, GitHub Models, local…). Shows cost when the provider reports it. |
 | **[Gemini CLI](https://geminicli.com)** | `npm install -g @google/gemini-cli` | `gemini`, then sign in with Google (or set `GEMINI_API_KEY`) | Uses your Google account. |
 
-Every engine gets the same Leadsmith tools and the same limits. It can use the Leadsmith tools and the web, but not shell commands, file edits, or the tools that approve and send email. Engines without sub-agents get the four agents' playbooks and do each role in turn. **Model** in Settings is optional. Leave it empty for the engine's default, or use that engine's own model names (e.g. `sonnet`, `gpt-5.5`, `anthropic/claude-sonnet-5-5`, `gemini-3.6-flash`).
+Every engine gets the same Leadsmith tools and the same limits. It can use the Leadsmith tools and the web, but not shell commands, file edits, or the tools that approve and send email. Engines without sub-agents get the four agents' playbooks and do each role in turn. **Model** in Settings is a dropdown of the connected engine's models: Claude Code's Sonnet, Opus, Haiku and Fable; the models in your Codex account; every model from your OpenCode providers, grouped by provider; or Gemini's Auto, Pro, Flash and Flash-Lite. **Default** lets the engine choose, and **Other…** takes any model name.
 
 ### Also chat with Leadsmith inside your agent (optional)
 

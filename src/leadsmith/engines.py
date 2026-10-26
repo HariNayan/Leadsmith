@@ -102,6 +102,10 @@ class Engine:
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         return True, None
 
+    def models(self) -> list[dict[str, str]]:
+        """Models for the Settings dropdown: [{"id", "label"}]. Aliases where the CLI has them, so they stay current."""
+        return []
+
     def command(self, model: str) -> tuple[list[str], dict[str, str]]:
         raise NotImplementedError
 
@@ -111,6 +115,13 @@ class Engine:
 
 class Claude(Engine):
     TOOL_PREFIX = "mcp__leadsmith__"
+
+    def models(self) -> list[dict[str, str]]:
+        # Aliases always point at the newest model of each family.
+        return [{"id": "sonnet", "label": "Sonnet: balanced, good default"},
+                {"id": "opus", "label": "Opus: most capable, uses more of your plan"},
+                {"id": "haiku", "label": "Haiku: fastest, lightest"},
+                {"id": "fable", "label": "Fable"}]
 
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         out = _run_quiet([path, "auth", "status", "--json"])
@@ -157,6 +168,17 @@ class Claude(Engine):
 
 
 class Codex(Engine):
+    def models(self) -> list[dict[str, str]]:
+        # Codex keeps the models available to your account in a cache file; read it without starting Codex.
+        try:
+            cache = json.loads((Path.home() / ".codex" / "models_cache.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        found = [m for m in cache.get("models") or [] if m.get("slug") and m.get("visibility", "list") == "list"]
+        found.sort(key=lambda m: m.get("priority", 99))
+        return [{"id": m["slug"], "label": f"{m.get('display_name') or m['slug']}"
+                 + (f": {m['description'].rstrip('.')}" if m.get("description") else "")} for m in found]
+
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         out = _run_quiet([path, "login", "status"])
         text = ((out.stdout or "") + (out.stderr or "")).strip() if out else ""
@@ -201,6 +223,12 @@ class Codex(Engine):
 
 
 class OpenCode(Engine):
+    def models(self) -> list[dict[str, str]]:
+        # The providers you've added decide the list; `opencode models` prints one provider/model per line.
+        out = _run_quiet([self.path() or self.binary, "models"], timeout=60)
+        lines = [ln.strip() for ln in (out.stdout if out else "").splitlines()]
+        return [{"id": ln, "label": ln} for ln in lines if re.fullmatch(r"[\w.@-]+/\S+", ln)]
+
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         out = _run_quiet([path, "auth", "list"])
         text = re.sub(r"\x1b\[[0-9;]*m", "", (out.stdout or "") if out else "")
@@ -240,6 +268,13 @@ class OpenCode(Engine):
 
 
 class Gemini(Engine):
+    def models(self) -> list[dict[str, str]]:
+        # Gemini CLI's own aliases resolve to its current models.
+        return [{"id": "auto", "label": "Auto: Gemini picks per task"},
+                {"id": "pro", "label": "Pro: most capable"},
+                {"id": "flash", "label": "Flash: fast, good default"},
+                {"id": "flash-lite", "label": "Flash-Lite: fastest, lightest"}]
+
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         home = Path.home() / ".gemini"
         if any(os.environ.get(k) for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI")):

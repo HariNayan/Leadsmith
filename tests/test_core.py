@@ -511,6 +511,30 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn("name: signal-scout", solo)  # frontmatter stripped
         self.assertNotIn("Playbook", jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["claude"]))
 
+    def test_model_lists_for_the_dropdown(self):
+        import json as _json
+        import tempfile as _tmp
+        from pathlib import Path
+        from unittest import mock
+
+        from leadsmith import engines
+
+        self.assertIn("sonnet", [m["id"] for m in engines.ENGINES["claude"].models()])
+        self.assertIn("flash", [m["id"] for m in engines.ENGINES["gemini"].models()])
+        home = Path(_tmp.mkdtemp())
+        (home / ".codex").mkdir()
+        (home / ".codex" / "models_cache.json").write_text(_json.dumps({"models": [
+            {"slug": "gpt-b", "display_name": "GPT-B", "visibility": "list", "priority": 2},
+            {"slug": "gpt-a", "display_name": "GPT-A", "visibility": "list", "priority": 1, "description": "Fast."},
+            {"slug": "internal", "visibility": "hide"}]}))
+        with mock.patch.object(engines.Path, "home", return_value=home):
+            codex = engines.ENGINES["codex"].models()
+        self.assertEqual([m["id"] for m in codex], ["gpt-a", "gpt-b"])  # hidden ones left out, in Codex's order
+        self.assertEqual(codex[0]["label"], "GPT-A: Fast")
+        out = mock.Mock(stdout="opencode/big-pickle\nnot a model line\ngoogle/gemini-3-pro\n")
+        with mock.patch.object(engines, "_run_quiet", return_value=out):
+            self.assertEqual([m["id"] for m in engines.ENGINES["opencode"].models()], ["opencode/big-pickle", "google/gemini-3-pro"])
+
     def test_engine_setting_and_old_model_name(self):
         from unittest import mock
 

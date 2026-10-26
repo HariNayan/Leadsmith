@@ -531,6 +531,7 @@ async def connect_engine(request: Request) -> Response:
         raise ApiError(f"{engine.label} isn't installed. {engine.install}")
     if not status["logged_in"]:
         raise ApiError(f"{engine.label} is installed but signed out. {engine.sign_in}")
+    status["models"] = await asyncio.to_thread(engine.models)
     _connected["engine"] = status
     if engines.current().key != key:
         config.save_env({"AGENT_ENGINE": key, "AGENT_MODEL": ""})  # model names differ between engines

@@ -467,3 +467,6 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .engine-help { grid-column: 1; }
 .dot.grey { background: var(--text-3); }
 .modal .engines { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+
+#model-select { width: 100%; }
+#model-other { margin-top: 8px; }

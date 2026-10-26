@@ -176,6 +176,41 @@ function modal({ title, intro = "", art = "", body = "", confirm = "OK", cancel 
   if (first) first.focus();
 }
 
+// Model: a dropdown of the connected engine's models, plus Default and "Other…" for anything not listed.
+// The real setting lives in a hidden input so Save changes works as for every other field.
+function modelPicker(engine, value) {
+  const models = (engine.connected && engine.models) || [];
+  const listed = models.some((m) => m.id === value);
+  const other = Boolean(value) && !listed;
+  const groups = {};
+  models.forEach((m) => { const g = engine.key === "opencode" ? m.id.split("/")[0] : ""; (groups[g] = groups[g] || []).push(m); });
+  const opts = Object.entries(groups).map(([g, list]) => {
+    const items = list.map((m) => `<option value="${esc(m.id)}" ${m.id === value ? "selected" : ""}>${esc(engine.key === "opencode" ? m.id.slice(g.length + 1) : m.label)}</option>`).join("");
+    return g ? `<optgroup label="${esc(g)}">${items}</optgroup>` : items;
+  }).join("");
+  return `<label class="field">Model<span class="help">${engine.connected
+      ? `Models available on ${esc(engine.label)}. Default lets ${esc(engine.label)} choose.`
+      : "Connect an agent above to choose one of its models."}</span>
+    <input type="hidden" data-key="AGENT_MODEL" value="${esc(value)}">
+    <select id="model-select" ${engine.connected ? "" : "disabled"}>
+      <option value="" ${!value ? "selected" : ""}>Default (${esc(engine.connected ? engine.label : "engine")} decides)</option>
+      ${opts}
+      <option value="__other" ${other ? "selected" : ""}>Other… (type a model name)</option>
+    </select>
+    <input type="text" id="model-other" placeholder="${esc(engine.model_hint || "model name")}" value="${other ? esc(value) : ""}" ${other ? "" : "hidden"}></label>`;
+}
+
+function wireModelPicker(root) {
+  const sel = $("#model-select", root), other = $("#model-other", root), real = $('[data-key="AGENT_MODEL"]', root);
+  if (!sel) return;
+  const sync = () => {
+    other.hidden = sel.value !== "__other";
+    real.value = sel.value === "__other" ? other.value.trim() : sel.value;
+  };
+  sel.onchange = () => { sync(); if (!other.hidden) other.focus(); };
+  other.oninput = sync;
+}
+
 function engineCards(list, current) {
   return `<div class="engines">${list.map((e) => {
     const on = current.connected && current.key === e.key;
@@ -1177,7 +1212,7 @@ PAGES.settings = async () => {
     ${set("Agent engine", "The coding agent that runs the four agents, on your own plan. No API key needed in Leadsmith.",
       `<p class="help" style="margin:0 0 10px">One agent at a time, and only when you connect it. Nothing starts on its own: after you restart the dashboard, connect again.</p>
        ${engineCards(s.engines, s.engine)}
-       ${field("AGENT_MODEL", 'id="agent-model"')}`)}
+       ${modelPicker(s.engine, f.AGENT_MODEL.value)}`)}
     ${set("Gmail", "Emails go out from your own inbox, so replies land there too.",
       `${field("GMAIL_ADDRESS")}${field("GMAIL_APP_PASSWORD", 'autocomplete="new-password"')}
        <div class="actions"><button class="btn sm" id="test-gmail">${icon("refresh", "sm")}Test connection</button><span id="gmail-result" style="color:var(--text-2);font-size:12.5px"></span></div>`)}
@@ -1210,8 +1245,7 @@ PAGES.settings = async () => {
     try { await api("/api/settings", { method: "PUT", body }); toast("Settings saved"); refreshOverview(); render(); } catch (e) { fail(e); }
   };
   $$("[data-key]").forEach((el) => (el.dataset.orig = String(el.type === "checkbox" ? el.checked : el.value)));
-  const hintFor = s.engines.find((x) => x.key === s.engine.key) || {};
-  $("#agent-model").placeholder = hintFor.model_hint ? `Default model · ${hintFor.model_hint}` : "Default model";
+  wireModelPicker(main);
   wireEngineCards(main, () => { refreshOverview(); render(); });
   $("#test-gmail").onclick = async () => {
     // Save a changed address or app password first: the test reads the saved settings.
