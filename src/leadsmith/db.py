@@ -187,6 +187,7 @@ MIGRATIONS = {
     ("contacts", "last_reply_id"): "ALTER TABLE contacts ADD COLUMN last_reply_id TEXT",
     ("drafts", "kind"): "ALTER TABLE drafts ADD COLUMN kind TEXT NOT NULL DEFAULT 'sequence'",
     ("jobs", "engine"): "ALTER TABLE jobs ADD COLUMN engine TEXT",
+    ("jobs", "session_id"): "ALTER TABLE jobs ADD COLUMN session_id TEXT",
 }
 
 

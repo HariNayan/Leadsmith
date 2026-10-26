@@ -7,6 +7,7 @@ in the dashboard. Each adapter knows how to start its CLI headless and turn its 
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,21 @@ def tool_line(raw: str, args: Any, indent: str = "") -> str:
     args = args if isinstance(args, dict) else {}
     detail = args.get("domain") or args.get("query") or args.get("url") or args.get("website") or args.get("command") or args
     return f"{indent}→ {tool_name(raw)} {short(detail)}".rstrip()
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _pretty(name: str) -> str:
+    known = {"github-models": "GitHub Models", "github-copilot": "GitHub Copilot", "openai": "OpenAI",
+             "anthropic": "Anthropic", "openrouter": "OpenRouter", "google": "Google", "groq": "Groq",
+             "cloudflare-workers-ai": "Cloudflare Workers AI", "deepseek": "DeepSeek", "xai": "xAI", "ollama": "Ollama"}
+    return known.get(name, name.replace("-", " ").title())
 
 
 def mcp_server() -> dict[str, Any]:
@@ -85,14 +102,21 @@ class Engine:
         return shutil.which(self.binary)
 
     def info(self) -> dict[str, Any]:
-        """What Leadsmith knows without starting the engine: just whether it's installed."""
+        """What Leadsmith knows without starting the engine: whether it's installed, and the plan it signs in with."""
+        installed = bool(self.path())
         return {"key": self.key, "label": self.label, "plan": self.plan, "model_hint": self.model_hint,
-                "installed": bool(self.path()), "install": self.install}
+                "installed": installed, "install": self.install, "account": self.account() if installed else None}
+
+    def account(self) -> dict[str, Any] | None:
+        """The user's plan, read from the CLI's own files on this computer (nothing is started or sent).
+        {"plan": "Claude Pro", "detail": "..."} or None when it can't be told."""
+        return None
 
     def status(self) -> dict[str, Any]:
         """Starts the CLI once to check sign-in. Only called when the user clicks Connect."""
         path = self.path()
-        base = {"key": self.key, "label": self.label, "plan": self.plan, "model_hint": self.model_hint}
+        base = {"key": self.key, "label": self.label, "plan": self.plan, "model_hint": self.model_hint,
+                "account": self.account()}
         if not path:
             return {**base, "installed": False, "logged_in": False, "help": f"Install {self.label}: {self.install}"}
         logged_in, method = self.signed_in(path)
@@ -106,8 +130,13 @@ class Engine:
         """Models for the Settings dropdown: [{"id", "label"}]. Aliases where the CLI has them, so they stay current."""
         return []
 
-    def command(self, model: str) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
+        """The headless command. With `session`, it continues that conversation instead of starting a new one."""
         raise NotImplementedError
+
+    def session_of(self, event: dict[str, Any]) -> str | None:
+        """The session id, if this output event carries it."""
+        return None
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         raise NotImplementedError
@@ -123,6 +152,22 @@ class Claude(Engine):
                 {"id": "haiku", "label": "Haiku: fastest, lightest"},
                 {"id": "fable", "label": "Fable"}]
 
+    PLANS = {"claude_pro": "Claude Pro", "claude_max": "Claude Max", "claude_team": "Claude Team",
+             "claude_enterprise": "Claude Enterprise", "claude_free": "Claude Free"}
+
+    def account(self) -> dict[str, Any] | None:
+        oauth = _read_json(Path.home() / ".claude.json").get("oauthAccount") or {}
+        kind = oauth.get("organizationType") or ""
+        if kind:
+            return {"plan": self.PLANS.get(kind, kind.replace("_", " ").title()),
+                    "detail": "Extra usage on" if oauth.get("hasExtraUsageEnabled") else None}
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            return {"plan": "Anthropic API key", "detail": "Pay per use"}
+        return None
+
+    def session_of(self, event: dict[str, Any]) -> str | None:
+        return event.get("session_id") if event.get("type") == "system" else None
+
     def signed_in(self, path: str) -> tuple[bool, str | None]:
         out = _run_quiet([path, "auth", "status", "--json"])
         try:
@@ -131,7 +176,7 @@ class Claude(Engine):
             info = {}
         return bool(info.get("loggedIn")), info.get("authMethod")
 
-    def command(self, model: str) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
         mcp_config = config.HOME / ".dashboard-mcp.json"
         mcp_config.write_text(json.dumps({"mcpServers": {"leadsmith": mcp_server()}}), encoding="utf-8")
         allowed = [f"{self.TOOL_PREFIX}*", "WebSearch", "WebFetch", "Agent", "Task", "Skill", "TodoWrite"]
@@ -144,7 +189,7 @@ class Claude(Engine):
             model = config.normalize_model(model)
         except ValueError:
             model = ""  # an unusable value falls back to the Claude Code default instead of failing the run
-        return cmd + (["--model", model] if model else []), {}
+        return cmd + (["--model", model] if model else []) + (["--resume", session] if session else []), {}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         kind = event.get("type")
@@ -168,6 +213,37 @@ class Claude(Engine):
 
 
 class Codex(Engine):
+    PLANS = {"free": "ChatGPT Free", "go": "ChatGPT Go", "plus": "ChatGPT Plus", "pro": "ChatGPT Pro",
+             "team": "ChatGPT Team", "business": "ChatGPT Business", "enterprise": "ChatGPT Enterprise", "edu": "ChatGPT Edu"}
+
+    def account(self) -> dict[str, Any] | None:
+        auth = _read_json(Path.home() / ".codex" / "auth.json")
+        if auth.get("auth_mode") == "apikey" or (auth.get("OPENAI_API_KEY") and not auth.get("tokens")):
+            return {"plan": "OpenAI API key", "detail": "Pay per use"}
+        token = (auth.get("tokens") or {}).get("id_token") or ""
+        if token.count(".") != 2:
+            return None
+        try:  # only the plan claims are read from the sign-in token; the token itself is never used or shown
+            payload = token.split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        except (ValueError, TypeError):
+            return None
+        info = claims.get("https://api.openai.com/auth") or {}
+        kind = info.get("chatgpt_plan_type") or ""
+        until = (info.get("chatgpt_subscription_active_until") or "")[:10]
+        # The plan comes from Codex's last sign-in token, so it can be out of date; only show a date still ahead.
+        detail = "As of your last Codex sign-in"
+        try:
+            end = datetime.fromisoformat(until) if until else None
+        except ValueError:
+            end = None
+        if end and end.date() >= datetime.now().date():
+            detail = f"Active until {end.day} {end:%b %Y}"
+        return {"plan": self.PLANS.get(kind, f"ChatGPT {kind.title()}" if kind else "ChatGPT"), "detail": detail}
+
+    def session_of(self, event: dict[str, Any]) -> str | None:
+        return event.get("thread_id") if event.get("type") == "thread.started" else None
+
     def models(self) -> list[dict[str, str]]:
         # Codex keeps the models available to your account in a cache file; read it without starting Codex.
         try:
@@ -185,11 +261,13 @@ class Codex(Engine):
         ok = bool(out) and out.returncode == 0 and "not logged in" not in text.lower()
         return ok, text.replace("Logged in using ", "") or None
 
-    def command(self, model: str) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
         server = mcp_server()
         env_toml = "{" + ", ".join(f"{k}={json.dumps(v)}" for k, v in server["env"].items()) + "}"
-        cmd = [self.path() or self.binary, "exec", "--json", "--skip-git-repo-check", "--ephemeral",
-               "--sandbox", "read-only",  # shell commands can read, never write
+        # Sessions are kept (no --ephemeral) so a later run can continue them. `exec resume` has no --sandbox
+        # flag, so the read-only sandbox is set as config, the same way for new and continued sessions.
+        cmd = [self.path() or self.binary, "exec", *(["resume"] if session else []), "--json", "--skip-git-repo-check",
+               "-c", 'sandbox_mode="read-only"',  # shell commands can read, never write
                "-c", f"mcp_servers.leadsmith.command={json.dumps(server['command'])}",
                "-c", f"mcp_servers.leadsmith.args={json.dumps(server['args'])}",
                "-c", f"mcp_servers.leadsmith.env={env_toml}",
@@ -197,7 +275,7 @@ class Codex(Engine):
                "-c", 'mcp_servers.leadsmith.default_tools_approval_mode="approve"',
                "-c", "mcp_servers.leadsmith.startup_timeout_sec=60",
                "-c", 'web_search="live"']
-        return cmd + (["--model", model] if model else []) + ["-"], {}
+        return cmd + (["--model", model] if model else []) + ([session] if session else []) + ["-"], {}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         kind = event.get("type")
@@ -223,6 +301,22 @@ class Codex(Engine):
 
 
 class OpenCode(Engine):
+    def account(self) -> dict[str, Any] | None:
+        auth = _read_json(Path.home() / ".local" / "share" / "opencode" / "auth.json")
+        if not auth:
+            return {"plan": "OpenCode free models", "detail": "No providers added yet"}
+        kinds = {name: (entry.get("type") if isinstance(entry, dict) else None) for name, entry in auth.items()}
+        word = {"oauth": "subscription", "api": "API key"}
+        if len(set(kinds.values())) == 1:  # all the same kind: say it once
+            how = word.get(next(iter(kinds.values())) or "", "")
+            return {"plan": ", ".join(_pretty(n) for n in kinds),
+                    "detail": f"OpenCode providers · {how}{'s' if how and len(kinds) > 1 else ''}" if how else "OpenCode providers"}
+        return {"plan": ", ".join(f"{_pretty(n)} ({word.get(k or '', 'other')})" for n, k in kinds.items()),
+                "detail": "OpenCode providers"}
+
+    def session_of(self, event: dict[str, Any]) -> str | None:
+        return event.get("sessionID")
+
     def models(self) -> list[dict[str, str]]:
         # The providers you've added decide the list; `opencode models` prints one provider/model per line.
         out = _run_quiet([self.path() or self.binary, "models"], timeout=60)
@@ -235,7 +329,7 @@ class OpenCode(Engine):
         counts = [int(n) for n in re.findall(r"(\d+)\s+(?:credentials?|environment variables?)", text)]
         return sum(counts) > 0, f"{sum(counts)} provider(s)" if counts else None
 
-    def command(self, model: str) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
         server = mcp_server()
         cfg = {
             "$schema": "https://opencode.ai/config.json",
@@ -244,7 +338,8 @@ class OpenCode(Engine):
             "permission": {"edit": "deny", "bash": "deny", "webfetch": "allow"},
             "tools": {f"leadsmith_{name}": False for name in BLOCKED_MCP},
         }
-        cmd = [self.path() or self.binary, "run", "--format", "json"] + (["--model", model] if model else [])
+        cmd = [self.path() or self.binary, "run", "--format", "json"] + (["--model", model] if model else []) \
+            + (["--session", session] if session else [])
         return cmd, {"OPENCODE_CONFIG_CONTENT": json.dumps(cfg)}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
@@ -268,6 +363,20 @@ class OpenCode(Engine):
 
 
 class Gemini(Engine):
+    def account(self) -> dict[str, Any] | None:
+        home = Path.home() / ".gemini"
+        kind = ((_read_json(home / "settings.json").get("security") or {}).get("auth") or {}).get("selectedType") or ""
+        if kind == "oauth-personal" or (not kind and (home / "oauth_creds.json").exists()):
+            return {"plan": "Google account", "detail": "Gemini Code Assist"}
+        if kind == "vertex-ai" or os.environ.get("GOOGLE_GENAI_USE_VERTEXAI"):
+            return {"plan": "Vertex AI", "detail": "Your Google Cloud project"}
+        if kind == "gemini-api-key" or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+            return {"plan": "Gemini API key", "detail": "Free or paid, depending on the key"}
+        return None
+
+    def session_of(self, event: dict[str, Any]) -> str | None:
+        return event.get("session_id") if event.get("type") == "init" else None
+
     def models(self) -> list[dict[str, str]]:
         # Gemini CLI's own aliases resolve to its current models.
         return [{"id": "auto", "label": "Auto: Gemini picks per task"},
@@ -287,7 +396,7 @@ class Gemini(Engine):
             selected = {}
         return bool(selected.get("selectedType")), selected.get("selectedType")
 
-    def command(self, model: str) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
         # Project settings in the workspace: the Leadsmith server, the blocked tools, and no shell or file edits.
         settings_dir = config.HOME / ".gemini"
         settings_dir.mkdir(parents=True, exist_ok=True)
@@ -297,7 +406,7 @@ class Gemini(Engine):
         }, indent=2), encoding="utf-8")
         cmd = [self.path() or self.binary, "-o", "stream-json", "--approval-mode", "yolo", "--skip-trust",
                "--allowed-mcp-server-names", "leadsmith"]
-        return cmd + (["--model", model] if model else []) + ["-p", " "], {}
+        return cmd + (["--model", model] if model else []) + (["--resume", session] if session else []) + ["-p", " "], {}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         kind = event.get("type")
