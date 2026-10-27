@@ -74,6 +74,51 @@ def _signals(icp: str) -> list[tuple[int, str]]:
     return sorted(out, key=lambda s: -s[0])
 
 
+def _section_items(text: str, heading: str) -> list[str]:
+    """The filled-in bullet points under a '## heading' (TODO lines and template hints left out)."""
+    m = re.search(rf"^##\s*{re.escape(heading)}[^\n]*\n(.*?)(?=^##|\Z)", text, re.I | re.M | re.S)
+    items = [_clean(line) for line in re.findall(r"^\s*-\s*(.+)$", m.group(1), re.M)] if m else []
+    return [i for i in items if i]
+
+
+def enhance_request(text: str, count: int | None = None) -> dict[str, object]:
+    """Turn a short request ("find me some leads") into a precise brief from the business profile, so the agents
+    don't have to guess. No AI call: instant, and it only uses what the user wrote in their profile."""
+    text = (text or "").strip()
+    brain = {name: str(info["content"]) for name, info in read_brain().items()}
+    icp, personas, company = brain["icp"], brain["personas"], brain["company"]
+    found = re.search(r"\b(\d{1,3})\b", text)
+    count = str(count) if count else (found.group(1) if found else None)
+    fields = {
+        "industries": _field(icp, "Industries"), "size": _field(icp, "Company size"), "where": _field(icp, "Locations"),
+        "model": _field(icp, "Business model"), "tech": _field(icp, "Tech they use"),
+        "titles": _field(personas, "Titles to search"), "product": _field(company, "Product / service"),
+    }
+    signals = _signals(icp)
+    skip = _section_items(icp, "Disqualifiers")
+    lines = [f"Goal: {text}" if text else f"Goal: find {count or 10} new companies that fit my ideal customer"]
+    lines.append(f"How many: {count or 10} companies (fewer is fine if that's all that genuinely fit).")
+    fit = [f"{k}: {_brief(v)}" for k, v in (("Industries", fields["industries"]), ("Size", fields["size"]),
+                                             ("Locations", fields["where"]), ("Business model", fields["model"]),
+                                             ("Uses", fields["tech"])) if v]
+    if fit:
+        lines.append("Must fit: " + "; ".join(fit) + ".")
+    if signals:
+        lines.append("Reason to buy now (strongest first, last 90 days): " + "; ".join(s for _, s in signals[:4]) + ".")
+    if skip:
+        lines.append("Skip: " + "; ".join(skip[:4]) + "; and anyone already in my pipeline.")
+    if fields["titles"]:
+        lines.append(f"People: find the {_brief(fields['titles'], 3)}, with a published email where possible.")
+    if fields["product"]:
+        lines.append(f"Why they'd care: we offer {_brief(fields['product'])}.")
+    lines.append("Quality bar: real companies with a working website only; a source link and date for every signal; "
+                 "nothing invented. Return fewer results rather than weak ones.")
+    used = sum(bool(v) for v in fields.values()) + bool(signals) + bool(skip)
+    return {"text": "\n".join(lines), "used_profile": used > 0,
+            "missing": None if used else "Your Business profile is mostly empty, so there was little to add. "
+                                         "Fill in Ideal customer and Personas for sharper results."}
+
+
 def suggest_searches(limit: int = 4) -> dict[str, object]:
     """Ready-made Find-buyers searches built from the business profile. No AI call, instant."""
     brain = {name: str(info["content"]) for name, info in read_brain().items()}

@@ -538,3 +538,7 @@ table.seq-table td:nth-child(4) { width: 1%; }
 .card-body > p.help svg { flex: none; margin-top: 2px; color: var(--amber); }
 .reply-pick > span { flex: 1 1 180px; min-width: 0; }
 .reply-pick > svg { flex: none; }
+
+/* prompt enhancer */
+.enhance-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.enhance-row .help { flex: 1 1 220px; }

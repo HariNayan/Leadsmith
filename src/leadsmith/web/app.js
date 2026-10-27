@@ -273,6 +273,25 @@ function wireEngineCards(root, list, after) {
   }));
 }
 
+// "Enhance": turn a short request into a precise brief from the business profile (instant, no agent run).
+// The original stays one click away (Undo), and the result is editable before running.
+function wireEnhance(button, box, getCount) {
+  if (!button || !box) return;
+  button.onclick = async () => {
+    const before = box.value;
+    button.disabled = true;
+    try {
+      const r = await api("/api/enhance", { method: "POST", body: { text: before.trim() || box.placeholder, count: getCount ? getCount() : null } });
+      box.value = r.text;
+      box.rows = Math.min(12, Math.max(4, r.text.split("\n").length + 1));
+      box.focus();
+      toast(`${r.missing ? esc(r.missing) : "Enhanced from your business profile. Edit anything before you run."} <a href="#" data-undo-enhance>Undo</a>`, r.missing ? "error" : undefined, 7000);
+      const undo = document.querySelector("[data-undo-enhance]");
+      if (undo) undo.onclick = (e) => { e.preventDefault(); box.value = before; box.rows = 2; box.focus(); };
+    } catch (e) { fail(e); } finally { button.disabled = false; }
+  };
+}
+
 // Runs need a connected agent. If none is, ask which one to connect, then carry on.
 function ensureEngine() {
   if (state.overview?.engine?.connected) return Promise.resolve(true);
@@ -418,6 +437,7 @@ PAGES.home = async () => {
         ${(homeSug.suggestions.length ? homeSug.suggestions.slice(0, 3).map((x) => `<button class="suggest" data-suggest="Find 10 buyers: ${esc(x.query)}" title="${esc(x.query)}">${icon("sparkles", "sm")}${esc(x.label)}</button>`).join("")
           : `<button class="suggest" data-suggest="Find 10 B2B SaaS companies in the US that raised a Series A in the last 60 days and are hiring sales reps">${icon("zap", "sm")}Just raised + hiring</button>
         <button class="suggest" data-suggest="Find 10 YC companies hiring their first growth marketer">${icon("users", "sm")}YC, first marketer</button>`)}
+        <button class="btn sm" id="ask-enhance" title="Rewrite your request into a precise brief from your business profile">${icon("zap", "sm")}Enhance</button>
         <button class="btn primary sm" id="ask-go">${icon("sparkles")}Run</button>
       </div>
     </div>
@@ -445,6 +465,7 @@ PAGES.home = async () => {
     try { const job = await startJob("custom", { prompt }, { quiet: true }); state.activeJob = job.id; location.hash = "#/activity"; } catch (e) { fail(e); }
   };
   $("#ask-go").onclick = run;
+  wireEnhance($("#ask-enhance"), $("#ask"));
   $("#ask").onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); } };
   $$("[data-suggest]").forEach((b) => (b.onclick = () => { $("#ask").value = b.dataset.suggest; $("#ask").focus(); }));
   $$("[data-open]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); openAccount(a.dataset.open); }));
@@ -727,11 +748,13 @@ async function findBuyersModal() {
     body: `
       ${suggestionBlock(sug)}
       <label class="field">Who are you looking for?<span class="help">${sug.suggestions.length ? "Pick a suggestion above, edit it, or write your own." : "Leave empty to use your business profile."}</span>
-        <textarea id="f-focus" rows="3" placeholder="${esc(first || "Seed to Series A fintechs in India hiring their first sales rep")}">${esc(first)}</textarea></label>
+        <textarea id="f-focus" rows="3" placeholder="${esc(first || "Seed to Series A fintechs in India hiring their first sales rep")}">${esc(first)}</textarea>
+        <span class="enhance-row"><button type="button" class="btn sm" id="f-enhance">${icon("zap", "sm")}Enhance</button><span class="help">Turns a short request into a precise brief from your business profile. Edit it before you start.</span></span></label>
       <label class="field">Number of companies<input type="number" id="f-count" min="1" max="50" value="10" style="width:100px"></label>
       <div class="callout blue">${icon("info")}<div>Uses company websites, job boards, Google News, the YC directory, Hacker News hiring threads and web search. Nothing is sent.</div></div>`,
     onConfirm: async (root) => { await startJob("find_buyers", { count: Number($("#f-count", root).value) || 10, focus: $("#f-focus", root).value }); },
   });
+  wireEnhance($("#f-enhance"), $("#f-focus"), () => $("#f-count").value);
   const root = $("#modal-root");
   $$("[data-sugg]", root).forEach((b) => (b.onclick = () => {
     const box = $("#f-focus", root);

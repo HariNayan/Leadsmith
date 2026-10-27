@@ -201,6 +201,15 @@ async def add_contact(request: Request) -> Response:
     return ok({"contact": contact, "created": created})
 
 
+async def enhance(request: Request) -> Response:
+    """Rewrite a short request into a precise brief from the business profile. Instant, no agent run."""
+    from .brain import enhance_request
+
+    data = await body(request)
+    count = int(data["count"]) if str(data.get("count") or "").isdigit() else None
+    return ok(enhance_request(str(data.get("text") or ""), count))
+
+
 async def get_templates(request: Request) -> Response:
     sample = None
     with db.connect() as conn:
@@ -793,6 +802,7 @@ def create_app(port: int = 4600):
         Route("/api/contacts/{id:int}/verify", _wrap(verify_contact), methods=["POST"]),
         Route("/api/contacts/{id:int}/email", _wrap(edit_contact_email), methods=["PUT"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
+        Route("/api/enhance", _wrap(enhance), methods=["POST"]),
         Route("/api/engines", _wrap(list_engines)),
         Route("/api/engines/connect", _wrap(connect_engine), methods=["POST"]),
         Route("/api/engines/disconnect", _wrap(disconnect_engine), methods=["POST"]),
