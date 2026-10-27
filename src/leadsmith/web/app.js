@@ -188,12 +188,10 @@ function modelPicker(engine, value) {
     const items = list.map((m) => `<option value="${esc(m.id)}" ${m.id === value ? "selected" : ""}>${esc(engine.key === "opencode" ? m.id.slice(g.length + 1) : m.label)}</option>`).join("");
     return g ? `<optgroup label="${esc(g)}">${items}</optgroup>` : items;
   }).join("");
-  return `<label class="field">Model<span class="help">${engine.connected
-      ? `Models available on ${esc(engine.label)}. Default lets ${esc(engine.label)} choose.`
-      : "Connect an agent above to choose one of its models."}</span>
+  return `<label class="field">Model
     <input type="hidden" data-key="AGENT_MODEL" value="${esc(value)}">
     <select id="model-select" ${engine.connected ? "" : "disabled"}>
-      <option value="" ${!value ? "selected" : ""}>Default (${esc(engine.connected ? engine.label : "engine")} decides)</option>
+      <option value="" ${!value ? "selected" : ""}>${engine.connected ? `Default (${esc(engine.label)} decides)` : "Connect an agent to pick a model"}</option>
       ${opts}
       <option value="__other" ${other ? "selected" : ""}>Other… (type a model name)</option>
     </select>
@@ -226,7 +224,7 @@ function engineCards(list, current) {
       <div class="engine-head"><b>${esc(e.label)}</b>${on ? '<span class="engine-tag">Connected</span>' : last ? '<span class="engine-tag last">Last used</span>' : ""}
         <span class="engine-act">${on ? `<button class="btn sm" data-disconnect>Disconnect</button>`
           : e.installed ? `<button class="btn sm ${last ? "primary" : ""}" data-connect="${e.key}">Connect</button>` : ""}</span></div>
-      ${acct ? `<div class="engine-plan">${icon("card", "sm")}<span><span class="plan-name">${esc(acct.plan)}</span>${acct.detail ? `<span class="plan-detail">${esc(acct.detail)}</span>` : ""}</span></div>` : ""}
+      ${acct ? `<div class="engine-plan">${icon("card", "sm")}<span><span class="plan-name" title="${esc(acct.detail || "")}">${esc(acct.plan)}</span></span></div>` : ""}
       <div class="engine-state"><span class="dot ${on ? "green" : e.installed ? "grey" : "red"}"></span>${on ? esc(sessionLine(current)) : e.installed ? "Installed · not connected" : "Not installed"}</div>
       ${e.installed ? "" : `<div class="engine-help">${esc(e.install)}</div>`}
     </div>`;
@@ -1127,9 +1125,9 @@ PAGES.outreach = async () => {
             <td style="padding-left:16px;width:auto;border-right:1px solid var(--border);white-space:normal;max-width:460px"><div class="company">${avatar(fullName(c))}<div style="min-width:0"><div class="name">${esc(fullName(c))}</div><div class="domain">${esc(c.company || c.domain)} · ${esc(c.email || "")}</div></div></div>
               ${replyBlock(c, outreachIdeas[c.domain] || [])}</td>
             <td><div class="seq-chips">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div></td>
-            <td class="act-col">${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm ghost" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Regenerate: rewrite the emails that haven't gone out yet" aria-label="Regenerate ${esc(fullName(c))}'s emails">${icon("refresh", "sm")}<span class="btn-label">Regenerate</span></button>` : ""}</td>
             <td style="color:var(--text-2)">${c.last_sent ? ago(c.last_sent) : "–"}</td>
             <td><select data-stage="${c.id}" style="width:auto;height:28px;padding-top:0;padding-bottom:0" aria-label="Stage for ${esc(fullName(c))}">${[c.status, ...stages.filter((s) => s !== c.status)].map((s) => `<option value="${s}">${cap(s)}</option>`).join("")}</select></td>
+            <td class="act-col">${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm ghost" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Regenerate: rewrite the emails that haven't gone out yet" aria-label="Regenerate ${esc(fullName(c))}'s emails">${icon("refresh", "sm")}<span class="btn-label">Regenerate</span></button>` : ""}</td>
           </tr>`).join("")}</tbody></table></div>`
         : `<div class="empty"><div class="art">${icon("send")}</div><h3>Nothing queued</h3><p>Approve emails on the Review page and they wait here until you send them.</p><a class="btn" href="#/review">${icon("inbox")}Go to Review</a></div>`}
     </div></div>`;
@@ -1350,39 +1348,29 @@ PAGES.settings = async () => {
   const f = s.settings;
   const field = (key, extra = "") => {
     const x = f[key];
-    if (x.kind === "bool") return `<div class="toggle-row"><div><div style="font-weight:500">${esc(x.label)}</div><div style="color:var(--text-2);font-size:12.5px">${esc(x.help)}</div></div>
+    if (x.kind === "bool") return `<div class="toggle-row"><div><div style="font-weight:500">${esc(x.label)}</div>${x.help ? `<div style="color:var(--text-2);font-size:12.5px">${esc(x.help)}</div>` : ""}</div>
       <label class="switch"><input type="checkbox" data-key="${key}" ${x.value === "true" ? "checked" : ""} aria-label="${esc(x.label)}"><span></span></label></div>`;
-    if (x.kind === "textarea") return `<label class="field">${esc(x.label)}<span class="help">${esc(x.help)}</span><textarea rows="3" data-key="${key}">${esc(x.value)}</textarea></label>`;
+    if (x.kind === "textarea") return `<label class="field">${esc(x.label)}${x.help ? `<span class="help">${esc(x.help)}</span>` : ""}<textarea rows="3" data-key="${key}">${esc(x.value)}</textarea></label>`;
     const type = x.kind === "secret" ? "password" : x.kind === "int" ? "number" : "text";
     const ph = x.kind === "secret" ? (x.is_set ? "Saved. Type to replace" : "xxxx xxxx xxxx xxxx") : "";
-    return `<label class="field">${esc(x.label)}<span class="help">${esc(x.help)}</span><input type="${type}" data-key="${key}" value="${esc(x.value)}" ${ph ? `placeholder="${esc(ph)}"` : ""} ${type === "number" ? 'style="width:120px"' : ""} ${extra}></label>`;
+    return `<label class="field">${esc(x.label)}${x.help ? `<span class="help">${esc(x.help)}</span>` : ""}<input type="${type}" data-key="${key}" value="${esc(x.value)}" ${ph ? `placeholder="${esc(ph)}"` : ""} ${type === "number" ? 'style="width:120px"' : ""} ${extra}></label>`;
   };
-  const set = (title, blurb, body) => `<div class="set"><div><h3>${title}</h3><p>${blurb}</p></div><div class="fields">${body}</div></div>`;
+  const set = (title, blurb, body) => `<div class="set"><div><h3>${title}</h3>${blurb ? `<p>${blurb}</p>` : ""}</div><div class="fields">${body}</div></div>`;
   setTop("settings", "Settings", "", `<button class="btn primary" id="save-settings">Save changes</button>`);
   main.innerHTML = `<div class="page settings">
-    ${set("Agent engine", "The coding agent that runs the four agents, on your own plan. No API key needed in Leadsmith.",
-      `<p class="help" style="margin:0 0 10px">One agent at a time, and only when you connect it. Nothing starts on its own: after you restart the dashboard, connect again.</p>
-       ${engineCards(s.engines, s.engine)}
+    ${set("Agent engine", "",
+      `${engineCards(s.engines, s.engine)}
        ${modelPicker(s.engine, f.AGENT_MODEL.value)}`)}
-    ${set("Gmail", "Emails go out from your own inbox, so replies land there too.",
+    ${set("Gmail", "",
       `${field("GMAIL_ADDRESS")}${field("GMAIL_APP_PASSWORD", 'autocomplete="new-password"')}
        <div class="actions"><button class="btn sm" id="test-gmail">${icon("refresh", "sm")}Test connection</button><span id="gmail-result" style="color:var(--text-2);font-size:12.5px"></span></div>`)}
-    ${set("Sending", "Nothing leaves without your approval and this switch.", `${field("TEST_RECIPIENT", 'placeholder="you+test@gmail.com"')}${field("SEND_ENABLED")}${field("AUTO_FOLLOWUPS")}${field("DAILY_SEND_LIMIT")}${field("WARMUP")}${field("WARMUP_START")}${field("WARMUP_STEP")}${field("SEND_GAP_SECONDS")}${field("SEND_HOURS")}${field("SEND_WEEKDAYS_ONLY")}${field("PROSPECT_TIMEZONE")}`)}
-    ${set("Signature", "Added to the bottom of every email.", `${field("SENDER_NAME")}${field("SENDER_SIGNATURE")}${field("POSTAL_ADDRESS")}${field("OPT_OUT_LINE")}`)}
-    ${set("Verified emails", "Optional and paid. Off unless you add a key.",
-      `${field("BETTERCONTACT_API_KEY", 'autocomplete="off"')}<div class="help" style="font-size:12.5px;color:var(--text-2)">Get a key at <a href="https://bettercontact.rocks" target="_blank" rel="noopener">bettercontact.rocks</a>. The free sources still run first; this only adds a Verify button on guessed emails.</div>`)}
-    ${set("Sending responsibly", "You are the sender. This is a summary, not legal advice.",
-      `<div class="legal-list">
-        <div><b>US (CAN-SPAM)</b><span>Honest From and subject, your postal address, a working opt-out. Fill in Postal address above.</span></div>
-        <div><b>EU / EEA (GDPR)</b><span>Legitimate interest at minimum; some countries expect consent even for B2B. Stop at the first objection.</span></div>
-        <div><b>UK (PECR)</b><span>Company addresses are fine with an opt-out. Sole traders need consent.</span></div>
-        <div><b>Switzerland, Canada</b><span>Consent rules are stricter. Keep each email one-to-one and relevant to their role.</span></div>
-      </div>
-      <div class="help" style="font-size:12.5px;color:var(--text-2)">Leads in these regions get a flag in Leads and Review. Opt-out replies and bounces are added to your do-not-contact list automatically. The full notice is in <code>COMPLIANCE.md</code> in the Leadsmith folder.</div>`)}
-    ${set("Decks", s.browser ? `PDFs are rendered with ${esc(s.browser.split(/[\\/]/).pop())}.` : "No Chrome or Edge found, so decks are saved as HTML.", field("DECK_COLOR"))}
-    ${set("Data", `Everything lives on this computer in <code>${esc(s.workspace)}</code>`,
-      `<div class="actions"><a class="btn sm" href="/api/export/sequences">${icon("download", "sm")}Sequences</a><a class="btn sm" href="/api/export/contacts">${icon("download", "sm")}People</a><a class="btn sm" href="/api/export/accounts">${icon("download", "sm")}Companies</a></div>
-       <label class="field">Do-not-contact list<span class="help">An email address or a whole domain. Pending emails to them are cancelled.</span>
+    ${set("Sending", "", `${field("TEST_RECIPIENT", 'placeholder="you+test@gmail.com"')}${field("SEND_ENABLED")}${field("AUTO_FOLLOWUPS")}${field("DAILY_SEND_LIMIT")}${field("WARMUP")}${field("WARMUP_START")}${field("WARMUP_STEP")}${field("SEND_GAP_SECONDS")}${field("SEND_HOURS", 'placeholder="9-17"')}${field("SEND_WEEKDAYS_ONLY")}${field("PROSPECT_TIMEZONE")}`)}
+    ${set("Signature", "", `${field("SENDER_NAME")}${field("SENDER_SIGNATURE")}${field("POSTAL_ADDRESS")}${field("OPT_OUT_LINE")}`)}
+    ${set("Verified emails", "", field("BETTERCONTACT_API_KEY", 'autocomplete="off"'))}
+    ${set("Decks", s.browser ? "" : "No Chrome or Edge found, so decks are saved as HTML.", field("DECK_COLOR"))}
+    ${set("Data", "",
+      `<div class="field">Export CSV<div class="actions"><a class="btn sm" href="/api/export/sequences">${icon("download", "sm")}Sequences</a><a class="btn sm" href="/api/export/contacts">${icon("download", "sm")}People</a><a class="btn sm" href="/api/export/accounts">${icon("download", "sm")}Companies</a></div></div>
+       <label class="field">Do-not-contact list
          <div style="display:flex;gap:8px"><input type="text" id="dnc" placeholder="person@company.com or company.com"><button class="btn" id="dnc-add">Add</button></div></label>`)}
   </div>`;
   $("#save-settings").onclick = async () => {
