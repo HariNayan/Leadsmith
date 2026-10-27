@@ -58,16 +58,32 @@ Which one should I make first: A, B or C?
 
 "B" is the easiest reply anyone can send, and it tells you exactly what to build.
 
+Prefer a classic, personal note? Switch **Business profile → Email steps → Email style** to **Personal pitch + deck**. The writer opens with one specific, true observation, says what you do for buyers like theirs, builds a 4-page PDF deck made for that company and attaches it, then asks for a short call:
+
+```
+Subject: Kestrel trail shoe, before the spring drop
+
+Hi Dana,
+
+The new Kestrel trail shoe looks great, and the weeks before a drop are when product video does the most work.
+
+Northlight Studio films footwear and outdoor brands on real trails, so buyers can see grip and fit before they order.
+
+I've attached a 4-page deck made for Kestrel with a two-day shoot plan.
+
+Would a short call this week help?
+```
+
 ## How it works
 
 ![How Leadsmith works: business profile, leads, review and outreach, powered by four agents running on your coding agent](docs/how-it-works.png)
 
-- **The engine is the coding agent you already use**: Claude Code, Codex, OpenCode or Gemini CLI, running headless on your own plan. Pick one in **Settings → Agent engine**. Dashboard buttons start a background run, which you can watch live under **Agent runs**.
+- **The engine is the coding agent you already use**: Claude Code, Codex, OpenCode or Gemini CLI, running headless on your own plan. Connect one in **Settings → Agent engine**. Dashboard buttons start a background run, which you can watch live under **Agent runs**. If an agent hits its usage limit, finish the task with another one in a click.
 - **Four agents share one memory**: a local SQLite pipeline plus your business profile.
   1. **Signal Scout** finds companies that fit your ICP *and* show a reason to buy now: hiring, funding, new leaders, launches, tech.
   2. **People Finder** finds the decision maker and their email. It looks for an address published on their site first and only guesses from the company's pattern as a fallback.
   3. **Account Researcher** writes a short, sourced brief and the outreach angle.
-  4. **Outreach Writer** writes three ideas and a 3-step sequence in your voice, plus an optional LinkedIn note and a 4-page PDF deck.
+  4. **Outreach Writer** writes a 3-step sequence in your voice and your chosen style (an idea menu, or a personal pitch with a deck made for them), plus an optional LinkedIn note.
 - **You stay in control.** Agents can research and draft, but they can never approve or send. Approving and sending are your clicks in the dashboard.
 
 ### Free data only
@@ -107,11 +123,16 @@ Click a company to see the research brief, every signal with its source link, th
 
 Every draft waits here. You see why now, the ideas, all three emails (day 0, 3 and 7), where the email address came from, and region notes. Edit anything, **Send test to me**, then **Approve**. Drafts with red issues from the linter (spammy words, AI-sounding phrases, links in a first email, unfilled `{placeholders}`) can't be approved.
 
+- **Edit** next to the address fixes a wrong or guessed email. It's then marked *Entered by you*.
+- **Attach deck** and **View deck** show and attach the PDF deck made for that company.
+
 ![Review screen: idea cards, the email composer, a guessed-email warning and an EU compliance note](docs/screenshots/review.png)
 
 ### Outreach: sending, follow-ups and replies
 
 Approved emails go out from your own Gmail, only in business hours in each prospect's time zone, one a minute, within your warm-up limit. Follow-ups reply in the same thread when they're due, and stop by themselves when someone replies. Replies show up inline: "A" marks idea A as picked, and **Draft reply** writes your answer for review.
+
+Changed your mind about an approved email that hasn't gone out? **Regenerate** rewrites that person's unsent emails, with an optional note such as "shorter" or "warmer". They come off the send queue straight away and wait in Review until you approve them again. Sent emails are never touched.
 
 ![Outreach: people in sequence, each step's status, an inline reply and the picked idea](docs/screenshots/outreach.png)
 
@@ -121,19 +142,21 @@ Your company and offer, ideal customer, personas, and voice and rules. **Draft f
 
 ![Business profile editor](docs/screenshots/business-profile.png)
 
-### Email steps: AI-written or your own template
+### Email steps: style, and AI-written or your own template
 
-For each step, either let the AI write a fresh email, with an extra instruction if you like, or use **your own template**. Templates fill in lead fields such as `{first_name}`, `{company}` and `{ideas}`. Any other `{name}`, like `{personal_line}`, becomes one sourced sentence the AI writes. A live preview shows the result on a real lead.
+Pick the **Email style** for every first email: an **Idea menu** (three ideas they choose from) or a **Personal pitch + deck**. Then, for each step, either let the AI write a fresh email, with an extra instruction if you like, or use **your own template**. Templates fill in lead fields such as `{first_name}`, `{company}` and `{ideas}`. Any other `{name}`, like `{personal_line}`, becomes one sourced sentence the AI writes. A live preview shows the result on a real lead.
 
-![Email step templates with placeholders and a live preview](docs/screenshots/email-steps.png)
+![Email style picker (idea menu or personal pitch with a deck) above the step templates](docs/screenshots/email-steps.png)
 
 ### Agent runs and settings
 
-Every run shows its status, live log and cost. Settings holds your Gmail connection (with **Test connection**), sending hours, warm-up, the daily limit, signature and postal address, the optional BetterContact key, and a short note on sending responsibly.
+Every run shows its status, live log, cost and which agent ran it. If a run fails or you stop it, **Run again** retries it, and **Run with another agent** finishes it on a different one, picking up from what's already saved. That's handy when one plan hits its usage limit. Failures are explained in plain words, such as "the model's servers are busy" or "you've hit a usage limit".
+
+Settings holds your agents (each card shows the plan it signs in with), the model, your Gmail connection (with **Test connection**), sending hours, warm-up, the daily limit, signature and postal address, and the optional BetterContact key.
 
 | Agent runs | Settings |
 |---|---|
-| ![Agent runs with status and cost](docs/screenshots/agent-runs.png) | ![Settings](docs/screenshots/settings.png) |
+| ![A failed run with Run again and Run with another agent](docs/screenshots/agent-runs.png) | ![Settings with the agent cards, their plans and the model picker](docs/screenshots/settings.png) |
 
 ## Install
 
@@ -179,6 +202,9 @@ uv run leadsmith doctor
 ## Choose your agent engine
 
 Leadsmith works with any of these. Install one and sign in once in a terminal. Then click **Connect** next to it in **Settings → Agent engine**. If you start a run with no agent connected, Leadsmith asks you to connect one first. Only one agent is connected at a time, and only after you connect it: Leadsmith never starts or checks an agent in the background, and after you restart the dashboard you connect again.
+
+- **Your plan, on each card.** Settings shows what each agent signs in with, such as Claude Pro, ChatGPT Go, your OpenCode providers or a Gemini API key. It reads this from the agent's own files on your computer; nothing is started or sent.
+- **New or previous session.** Connecting asks whether to start a new session or continue the previous one, which shows when it was last used and what it was doing. While an agent stays connected, its runs share one conversation, so it remembers what it did in earlier runs.
 
 | Engine | Install | Sign in | Notes |
 |---|---|---|---|
@@ -248,6 +274,8 @@ Tip: set **Test mode** in Settings to your own address while you try it out. Eve
 - Emails go out only inside business hours in the **prospect's** time zone (default 9–17, weekdays), one a minute, with follow-ups counted in business days. Opening the app after a break never fires a burst of late follow-ups.
 - **Warm-up**: a new sender starts at 5 emails a day and adds 3 a day up to your daily limit (default 25).
 - Every email gets an opt-out line, a `List-Unsubscribe` header and your postal address. A do-not-contact list is checked before every send, and opt-out replies and bounces are added to it automatically.
+- An email that says something is attached can't be approved or sent unless the deck PDF really is attached.
+- **Regenerate** and changing a person's email both move their approved, unsent emails back to Review, so nothing goes out that you haven't seen in its final form.
 - Guessed emails are clearly labelled. Send small batches first, since bounces hurt your sender reputation.
 - The dashboard only listens on `127.0.0.1` and rejects cross-site and DNS-rebinding requests.
 - Leads that look like they're in the **EU/EEA, UK, Switzerland or Canada** get a flag with that region's rule in one line.
