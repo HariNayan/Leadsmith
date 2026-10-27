@@ -508,7 +508,6 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .style-about { font-size: 12.5px; color: var(--text-2); }
 .style-sample { margin: 4px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--subtle); border: 1px solid var(--border); white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--font, inherit); color: var(--text); }
 
-.btn.regen { margin-top: 8px; }
 
 /* editable recipient in Review */
 .to-row { flex-wrap: wrap; row-gap: 6px; }
@@ -519,3 +518,18 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .rerun-hint { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--red-bd, var(--border)); color: var(--text); }
 .engine-head { flex-wrap: wrap; row-gap: 6px; }
 .engine-head .engine-act { flex: none; }
+
+/* ── outreach: people in sequence ─────────────────── */
+table.seq-table td { height: 58px; padding-top: 10px; padding-bottom: 10px; }
+.seq-chips { display: flex; gap: 6px; flex-wrap: nowrap; align-items: center; }
+table.seq-table td.act-col, table.seq-table th.act-col { width: 1%; text-align: right; padding-right: 16px; }
+table.seq-table td:nth-child(4) { width: 1%; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+@media (max-width: 1400px) {
+  .seq-chips { flex-wrap: wrap; }
+  table.seq-table td:first-child { white-space: normal; }
+  table.seq-table .btn-label { display: none; }
+  table.seq-table td:nth-child(2) { min-width: 250px; }
+  table.seq-table td.act-col, table.seq-table th.act-col { padding-left: 6px; padding-right: 10px; }
+  table.seq-table td:first-child .domain { white-space: normal; }
+}

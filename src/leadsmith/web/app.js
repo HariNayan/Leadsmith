@@ -1120,14 +1120,14 @@ PAGES.outreach = async () => {
     </div>
     <div class="card" style="margin-top:16px;overflow:hidden">
       <div class="card-head">${icon("users")}People in sequence<div class="actions"><a class="btn ghost sm" href="/api/export/sequences?status=approved">${icon("download", "sm")}Export</a></div></div>
-      ${contacts.length ? `<div class="table-wrap"><table class="grid">
-        <thead><tr><th style="padding-left:16px;width:auto;border-right:1px solid var(--border)"><span class="h">${icon("user", "sm")}Person</span></th><th><span class="h">${icon("mail", "sm")}Sequence</span></th><th><span class="h">${icon("clock", "sm")}Last sent</span></th><th><span class="h">${icon("tag", "sm")}Stage</span></th></tr></thead>
+      ${contacts.length ? `<div class="table-wrap"><table class="grid seq-table">
+        <thead><tr><th style="padding-left:16px;width:auto;border-right:1px solid var(--border)"><span class="h">${icon("user", "sm")}Person</span></th><th><span class="h">${icon("mail", "sm")}Sequence</span></th><th><span class="h">${icon("clock", "sm")}Last sent</span></th><th><span class="h">${icon("tag", "sm")}Stage</span></th><th class="act-col"><span class="sr-only">Actions</span></th></tr></thead>
         <tbody>${contacts.map((c) => `
           <tr>
             <td style="padding-left:16px;width:auto;border-right:1px solid var(--border);white-space:normal;max-width:460px"><div class="company">${avatar(fullName(c))}<div style="min-width:0"><div class="name">${esc(fullName(c))}</div><div class="domain">${esc(c.company || c.domain)} · ${esc(c.email || "")}</div></div></div>
               ${replyBlock(c, outreachIdeas[c.domain] || [])}</td>
-            <td><div style="display:flex;gap:6px;flex-wrap:wrap">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div>
-              ${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm regen" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Rewrite the emails that haven't gone out yet">${icon("refresh", "sm")}Regenerate</button>` : ""}</td>
+            <td><div class="seq-chips">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div></td>
+            <td class="act-col">${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm ghost" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Regenerate: rewrite the emails that haven't gone out yet" aria-label="Regenerate ${esc(fullName(c))}'s emails">${icon("refresh", "sm")}<span class="btn-label">Regenerate</span></button>` : ""}</td>
             <td style="color:var(--text-2)">${c.last_sent ? ago(c.last_sent) : "–"}</td>
             <td><select data-stage="${c.id}" style="width:auto;height:28px;padding-top:0;padding-bottom:0" aria-label="Stage for ${esc(fullName(c))}">${[c.status, ...stages.filter((s) => s !== c.status)].map((s) => `<option value="${s}">${cap(s)}</option>`).join("")}</select></td>
           </tr>`).join("")}</tbody></table></div>`
