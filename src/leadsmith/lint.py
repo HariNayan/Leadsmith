@@ -51,13 +51,32 @@ def _words(text: str) -> list[str]:
 ATTACH_RE = re.compile(r"\b(attached|attaching|i've attached|i have attached|see the attachment|enclosed)\b", re.I)
 
 
+MENU_RE = re.compile(r"^\s*A\s*[).:\-]\s*\S.*\n(?:.*\n)*?\s*B\s*[).:\-]\s*\S", re.M)
+
+
+def has_idea_menu(text: str) -> bool:
+    """An 'A) ... B) ...' list of options."""
+    return bool(MENU_RE.search(text or ""))
+
+
+def mentions_company(text: str, company: str) -> bool:
+    """Does the email name the company? Accepts the name with or without suffixes, e.g. 'Acme' for 'Acme Inc.'"""
+    lower = (text or "").lower()
+    name = re.sub(r"\(.*?\)", "", company or "").strip().lower()
+    core = re.sub(r"\b(inc|ltd|llc|gmbh|pvt|co|corp|limited|technologies|labs|hq)\b\.?", "", name).strip(" ,.-")
+    candidates = {name, core, core.split(".")[0], core.replace(" ", "")}
+    return any(c and len(c) >= 3 and c in lower for c in candidates)
+
+
 def claims_attachment(text: str) -> bool:
     return bool(ATTACH_RE.search(text or ""))
 
 
 def check(subject: str | None, body: str, step: int = 1, company: str | None = None,
-          first_name: str | None = None, kind: str = "sequence", attached: bool | None = None) -> dict[str, Any]:
-    """`attached`: whether a deck PDF really goes with this email (None = unknown, not checked)."""
+          first_name: str | None = None, kind: str = "sequence", attached: bool | None = None,
+          style: str | None = None) -> dict[str, Any]:
+    """`attached`: whether a deck PDF really goes with this email (None = unknown, not checked).
+    `style`: the user's email style; in 'personal_pitch' a first email must not offer an A/B/C menu."""
     issues: list[dict[str, str]] = []
 
     def add(level: str, rule: str, message: str) -> None:
@@ -65,6 +84,9 @@ def check(subject: str | None, body: str, step: int = 1, company: str | None = N
 
     text = body or ""
     lower = text.lower()
+    if style == "personal_pitch" and step == 1 and kind != "reply" and has_idea_menu(text):
+        add("FAIL", "style", "Your email style is Personal pitch: no A/B/C options. Write one specific observation, "
+                             "what you do for buyers like theirs, the deck line and one short ask.")
     if attached is False and claims_attachment(text):
         add("FAIL", "attachment", "The email says something is attached, but no deck is attached. "
                                   "Attach the deck (it must have rendered as a PDF) or remove that line.")
@@ -145,6 +167,10 @@ def check(subject: str | None, body: str, step: int = 1, company: str | None = N
             title_case = [w for w in s.split() if w[:1].isupper()]
             if len(s.split()) > 2 and len(title_case) == len(s.split()):
                 add("WARN", "subject", "Title Case subjects look like newsletters. Use lowercase or sentence case.")
+
+    if step == 1 and kind != "reply" and company and not mentions_company(text + " " + (subject or ""), company):
+        add("WARN", "generic", f"Doesn't mention {company} or anything specific to them, so it could go to anyone. "
+                               "Name their product, launch or news.")
 
     fails = sum(1 for i in issues if i["level"] == "FAIL")
     return {"ok": fails == 0, "words": words, "fails": fails,

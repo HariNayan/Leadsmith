@@ -24,7 +24,12 @@ HEADLESS_NOTE = """You are running unattended, started from the Leadsmith dashbo
 - Use the Leadsmith MCP tools, plus your web search and web fetch tools (if you have them) for discovery and finding people.
 - Save everything with the Leadsmith tools; the user works from the dashboard, not this transcript.
 - You cannot approve or send anything. The user reviews drafts in the dashboard.
-- Finish with a short summary: what you saved (accounts, contacts, drafts) and anything that blocked you."""
+- Genuine and specific, never generic: only real companies with a working website; a source URL and date behind
+  every signal and claim; no invented names, emails, numbers or quotes; every email names something true about that
+  company. If you can't find enough that genuinely fit, return fewer and say why. Don't pad the list.
+- Before your summary, call quality_check with the domains you worked on and fix what it reports.
+- Finish with a short summary: what you saved (accounts, contacts, drafts), what quality_check still flags, and
+  anything that blocked you."""
 
 # Engines without sub-agents get the playbooks inline and play each role themselves.
 ROLES = {

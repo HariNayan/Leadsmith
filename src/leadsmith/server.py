@@ -75,11 +75,14 @@ def brain_read() -> dict:
             "verdicts": feedback,
         }
     style = (config.get("EMAIL_STYLE") or "idea_menu").strip()
+    if style == "personal_pitch" and "voice" in result:
+        result["voice"]["content"] = _voice_for_pitch(result["voice"]["content"])
     result["email_style"] = {
         "style": style,
         "how_to_use": ("Write every first email as a PERSONAL PITCH, following the 'Style: personal pitch' section of the "
                        "outreach-writer playbook: build the account's deck first (save_deck), then save step 1 with "
-                       "attach_deck=true. This overrides any 'Offer ideas' line in voice.md."
+                       "attach_deck=true. Never offer A/B/C options or a list of ideas in an email: one idea, made "
+                       "specific. Use voice.md for sender, tone and always/never rules only."
                        if style == "personal_pitch" else
                        "Write first emails as an IDEA MENU (three ideas, A/B/C), following the outreach-writer playbook. "
                        "voice.md may still say 'Offer ideas: no' to use a classic sequence instead."),
@@ -93,6 +96,25 @@ def brain_read() -> dict:
             "steps": [{k: t[k] for k in ("step", "name", "mode", "subject", "body", "instruction")} for t in custom],
         }
     return result
+
+
+PITCH_SEQUENCE = """## Sequence (set by Email style: Personal pitch + deck)
+- Step 1 (day 0): one specific, true observation about their product or news and why it matters now; one sentence on what we do for buyers like theirs; one line on the 4-page deck made for them (attached); one short ask ("Would a short call this week help?"). No A/B/C options. Under 90 words.
+- Step 2 (day 3): reply in the same thread with one concrete detail from the plan in the deck. One question. Under 70 words.
+- Step 3 (day 7): short, easy out: offer a smaller first step, or to step back. Under 45 words.
+"""
+
+
+def _voice_for_pitch(voice: str) -> str:
+    """voice.md written for the idea menu still applies for tone and rules; only its sequence structure is swapped."""
+    import re as _re
+
+    swapped, n = _re.subn(r"^##\s*Sequence[^\n]*\n.*?(?=^##\s|\Z)", PITCH_SEQUENCE + "\n", voice, flags=_re.M | _re.S)
+    if not n:
+        swapped = voice.rstrip() + "\n\n" + PITCH_SEQUENCE
+    swapped = _re.sub(r"^(\s*-\s*Offer ideas:).*$", r"\1 no (Email style is Personal pitch: no A/B/C options)", swapped, flags=_re.M | _re.I)
+    return _re.sub(r"^(\s*-\s*4-page PDF deck per account:).*$", r"\1 yes (built for every account and attached to email 1)",
+                   swapped, flags=_re.M | _re.I)
 
 
 @mcp.tool()
@@ -239,6 +261,14 @@ def source_stats() -> dict:
 
 
 @mcp.tool()
+def quality_check(domains: list[str]) -> dict:
+    """Check that what you saved for these accounts is genuine and specific before you finish: every company has a
+    sourced, dated signal and a real why_now, people have emails, and drafts pass lint and name the company.
+    Call it at the end of every run with the domains you worked on, then fix what it lists."""
+    return db.quality_report(domains)
+
+
+@mcp.tool()
 def check_known(domains: list[str]) -> dict:
     """Before researching, check which domains are already in the pipeline or on the do-not-contact list."""
     return db.known(domains)
@@ -360,7 +390,8 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
         return {"error": "There's no PDF deck for this account to attach. Call save_deck first (and check it rendered "
                          "as a PDF), or save the email without attach_deck and without mentioning an attachment."}
     account = db.dossier(contact["domain"]) or {}
-    result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"), attached=bool(attach_deck))
+    result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"), attached=bool(attach_deck),
+                        style=(config.get("EMAIL_STYLE") or "idea_menu").strip())
     delay = send_after_days if send_after_days is not None else {1: 0, 2: 3}.get(step, 7)
     try:
         draft = db.upsert_draft(contact_id, step, subject, body, channel, delay, result)

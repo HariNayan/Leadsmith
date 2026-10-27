@@ -447,6 +447,55 @@ def set_contact_email(contact_id: int, email: str | None, status: str, note: str
     return get_contact(contact_id) or {}
 
 
+def quality_report(domains: list[str]) -> dict[str, Any]:
+    """What isn't genuine or specific enough yet, per account: unsourced signals, no reason to buy now, missing or
+    guessed emails, drafts that fail lint or don't mention the company. Used by agents before they finish."""
+    from . import lint  # local import: lint has no db dependency, and db must stay importable on its own
+
+    issues: list[dict[str, str]] = []
+    pitch = (config.get("EMAIL_STYLE") or "").strip() == "personal_pitch"
+    with connect() as conn:
+        for domain in [normalize_domain(d) for d in domains if d]:
+            account = one(conn.execute("SELECT * FROM accounts WHERE domain = ?", (domain,)))
+            if not account:
+                issues.append({"domain": domain, "level": "FAIL", "issue": "Not saved. Call save_account first."})
+                continue
+            signals = rows(conn.execute("SELECT title, url, observed_at FROM signals WHERE domain = ?", (domain,)))
+            sourced = [s for s in signals if s["url"]]
+            if not sourced:
+                issues.append({"domain": domain, "level": "FAIL", "issue": "No signal with a source URL. Find one, or drop this company."})
+            undated = [s["title"] for s in sourced if not s["observed_at"]]
+            if undated:
+                issues.append({"domain": domain, "level": "WARN", "issue": f"{len(undated)} signal(s) have no date: {undated[0][:60]}"})
+            if not (account.get("why_now") or "").strip():
+                issues.append({"domain": domain, "level": "FAIL", "issue": "No why_now: say the specific reason to reach out now."})
+            contacts = rows(conn.execute("SELECT id, first_name, email, email_status FROM contacts WHERE domain = ?", (domain,)))
+            if not contacts:
+                issues.append({"domain": domain, "level": "WARN", "issue": "No contact saved."})
+            for c in contacts:
+                who = c["first_name"] or c["email"] or f"contact {c['id']}"
+                if not c["email"]:
+                    issues.append({"domain": domain, "level": "WARN", "issue": f"{who} has no email."})
+                elif c["email_status"] == "guessed":
+                    issues.append({"domain": domain, "level": "INFO", "issue": f"{who}'s email is guessed; look for a published one."})
+                for d in rows(conn.execute("SELECT step, subject, body, lint FROM drafts WHERE contact_id = ? AND status IN"
+                                           " ('draft', 'approved') AND channel = 'email'", (c["id"],))):
+                    result = json.loads(d["lint"]) if d["lint"] else {}
+                    if result and not result.get("ok", True):
+                        issues.append({"domain": domain, "level": "FAIL", "issue": f"{who} email {d['step']} fails lint: "
+                                       + "; ".join(i["message"] for i in result.get("issues", []) if i["level"] == "FAIL")[:200]})
+                    if d["step"] == 1 and pitch and lint.has_idea_menu(d["body"] or ""):
+                        issues.append({"domain": domain, "level": "FAIL", "issue": f"{who} email 1 offers A/B/C options, but your "
+                                       "email style is Personal pitch. Rewrite it as one specific pitch."})
+                    if d["step"] == 1 and not lint.mentions_company((d["body"] or "") + " " + (d["subject"] or ""),
+                                                                   account.get("name") or domain):
+                        issues.append({"domain": domain, "level": "WARN", "issue": f"{who} email 1 never names the company: too generic."})
+    fails = sum(1 for i in issues if i["level"] == "FAIL")
+    return {"ok": fails == 0, "fails": fails, "issues": issues,
+            "how_to_use": "Fix every FAIL (find a real source, write a specific why_now, rewrite the email) or drop that "
+                          "company. Fix WARNs where you can. List anything you couldn't fix in your final summary."}
+
+
 def get_contact(contact_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         return one(conn.execute("SELECT * FROM contacts WHERE id = ?", (contact_id,)))

@@ -24,6 +24,9 @@ For the selected domains, dispatch at the same time:
 ## 3. Write → `leadsmith:outreach-writer`
 Dispatch the writer for accounts that now have research and at least one contact with an email (one agent per ~5 accounts).
 
+## Quality gate
+Before showing anything, call `quality_check` with the domains you worked on. Fix every FAIL: find a real, dated source, write a specific why_now, or rewrite the email so it names something true about that company. If you can't fix it, drop that company. Fewer genuine results beat a padded list. Mention any WARNs you couldn't fix.
+
 ## 4. Review with the user
 Call `list_drafts` (status "draft") and present them compactly, grouped by account:
 - account, why now (1 line), contact (name, title, email status)
