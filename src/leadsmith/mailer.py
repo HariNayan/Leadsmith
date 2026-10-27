@@ -189,6 +189,12 @@ def _build(draft: dict[str, Any], contact: dict[str, Any], first: dict[str, Any]
     return msg
 
 
+def message_text(msg: EmailMessage) -> str:
+    """The plain-text body, whether or not a deck is attached (an attached email is multipart)."""
+    body = msg.get_body(preferencelist=("plain",))
+    return body.get_content() if body is not None else ""
+
+
 _SEND_LOCK = threading.Lock()
 PROGRESS: dict[str, Any] = {"running": False}   # what the dashboard shows while a batch goes out
 STOP = threading.Event()                        # set by the Stop button
@@ -330,7 +336,8 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
                          "test_mode": bool(test_recipient()), "subject": msg["Subject"],
                          "days_late": round(overdue_days, 1) if overdue_days >= 1 else 0}
                 if not live:
-                    entry["preview"] = msg.get_content()[:600]
+                    entry["preview"] = message_text(msg)[:600]
+                    entry["attachments"] = [part.get_filename() for part in msg.iter_attachments()]
                     report["sent"].append(entry)
                     continue
                 if index > 0 and gap > 0:
