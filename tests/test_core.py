@@ -1040,6 +1040,119 @@ class RerunTests(unittest.TestCase):
             self.assertEqual(third["prompt"].count("stopped part-way"), 1)  # the note isn't stacked
 
 
+class QualityTests(unittest.TestCase):
+    def test_enhance_turns_a_vague_request_into_a_brief_from_the_profile(self):
+        from leadsmith import brain
+
+        icp = ("## Firmographics\n- Industries / keywords: dental clinics, physiotherapy\n- Company size (employees): 5-50\n"
+               "- Locations: India\n## Buying signals\n- 5 — Opening a new branch\n- 3 — Hiring a front-desk manager\n"
+               "## Disqualifiers\n- Hospital chains\n- TODO e.g. Competitors\n")
+        personas = "- Titles to search: Owner, Clinic director\n"
+        original = {n: brain.read_brain()[n]["content"] for n in ("icp", "personas")}
+        try:
+            brain.write_brain("icp", icp)
+            brain.write_brain("personas", personas)
+            out = brain.enhance_request("find me some leads", count=7)
+        finally:
+            for n, text in original.items():
+                brain.write_brain(n, text)
+        text = out["text"]
+        self.assertIn("Goal: find me some leads", text)
+        self.assertIn("How many: 7 companies", text)
+        self.assertIn("dental clinics", text)
+        self.assertIn("Opening a new branch; Hiring a front-desk manager", text)  # strongest signal first
+        self.assertIn("Skip: Hospital chains", text)
+        self.assertNotIn("TODO", text)
+        self.assertIn("Owner, Clinic director", text)
+
+    def test_quality_report_flags_unsourced_and_generic_work(self):
+        import uuid
+
+        tag = uuid.uuid4().hex[:5]
+        good, bad = f"good-{tag}.io", f"bad-{tag}.io"
+        db.upsert_account(good, name="Goodco", why_now="Raised a seed round last week")
+        db.add_signal(good, "funding", "Seed round", "$3M", f"https://news.example/{tag}", "news", "2026-10-20")
+        c, _ = db.upsert_contact(good, first_name="Ana", email=f"ana@{good}", email_status="public")
+        db.upsert_draft(c["id"], 1, "goodco seed round", "Hi Ana, congrats on Goodco's seed round.", "email", 0, {"ok": True, "issues": []})
+        db.upsert_account(bad, name="Badco")
+        db.add_signal(bad, "news", "Something happened", None, None, "web", None)
+        c2, _ = db.upsert_contact(bad, first_name="Bo", email=f"bo@{bad}")
+        db.upsert_draft(c2["id"], 1, "quick question", "Hi Bo, we help teams grow faster.", "email", 0, {"ok": True, "issues": []})
+        report = db.quality_report([good, bad])
+        problems = {(i["domain"], i["level"]) for i in report["issues"]}
+        self.assertNotIn((good, "FAIL"), problems)
+        bad_issues = " | ".join(i["issue"] for i in report["issues"] if i["domain"] == bad)
+        self.assertIn("No signal with a source URL", bad_issues)
+        self.assertIn("No why_now", bad_issues)
+        self.assertIn("never names the company", bad_issues)
+        self.assertFalse(report["ok"])
+
+    def test_lint_warns_when_a_first_email_could_go_to_anyone(self):
+        generic = lint.check("quick question", "Hi Bo, we help teams grow faster. Worth a chat?", 1, "Badco Inc.", "Bo")
+        self.assertIn("generic", [i["rule"] for i in generic["issues"]])
+        specific = lint.check("badco launch", "Hi Bo, saw the Badco launch on Monday. Worth a chat?", 1, "Badco Inc.", "Bo")
+        self.assertNotIn("generic", [i["rule"] for i in specific["issues"]])
+
+
+class StyleEnforcementTests(unittest.TestCase):
+    MENU = "Hi Alex,\n\nSaw the bootcamp hit a million views.\n\nA) a 60-second film\nB) five problem loops\nC) a tour\n\nWhich first?"
+
+    def test_personal_pitch_fails_an_idea_menu_and_idea_menu_style_allows_it(self):
+        self.assertTrue(lint.has_idea_menu(self.MENU))
+        self.assertFalse(lint.has_idea_menu("Hi Alex, I've attached a deck with a plan (option A in the deck)."))
+        pitch = lint.check("bootcamp video", self.MENU, 1, "Alex", "Alex", style="personal_pitch")
+        self.assertIn("style", [i["rule"] for i in pitch["issues"] if i["level"] == "FAIL"])
+        self.assertNotIn("style", [i["rule"] for i in lint.check("bootcamp video", self.MENU, 1, "Alex", "Alex", style="idea_menu")["issues"]])
+
+    def test_agent_sees_only_the_pitch_structure_from_voice_md(self):
+        from unittest import mock
+
+        from leadsmith import server
+
+        voice = ("# Voice\n## Tone\n- Warm, direct.\n## Sequence\n- Step 1 (day 0): one observation, then 3 ideas (A/B/C).\n"
+                 "## Extras\n- Offer ideas: yes (A/B/C)\n- 4-page PDF deck per account: no\n## Never\n- Invent facts.\n")
+        seen = server._voice_for_pitch(voice)
+        self.assertNotIn("3 ideas (A/B/C)", seen)
+        self.assertIn("No A/B/C options", seen)
+        self.assertIn("- Offer ideas: no", seen)
+        self.assertIn("deck per account: yes", seen)
+        self.assertIn("- Warm, direct.", seen)  # tone and rules are kept
+        self.assertIn("- Invent facts.", seen)
+        with mock.patch.dict(os.environ, {"EMAIL_STYLE": "idea_menu"}):
+            self.assertNotIn("set by Email style", server.brain_read()["voice"]["content"])
+
+
+class AttachedPreviewTests(unittest.TestCase):
+    def test_send_preview_works_for_an_email_with_a_deck_attached(self):
+        import tempfile as _tmp
+        import uuid
+        from pathlib import Path
+        from unittest import mock
+
+        from leadsmith import mailer
+
+        tag = uuid.uuid4().hex[:5]
+        domain = f"deck-{tag}.io"
+        db.upsert_account(domain, name="Deckco", timezone="UTC")
+        c, _ = db.upsert_contact(domain, first_name="Dee", email=f"dee@{domain}")
+        pdf = Path(_tmp.mkdtemp()) / "deck.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+        with db.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO decks (domain, title, slides, pdf_path, error, updated_at) VALUES (?, ?, '[]', ?, NULL, ?)",
+                         (domain, "Deckco plan", str(pdf), db.now()))
+        d = db.upsert_draft(c["id"], 1, "deckco launch", "Hi Dee, I've attached a 4-page deck made for Deckco.", "email", 0, {"ok": True, "issues": []})
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET attach_deck = 1, status = 'approved' WHERE id = ?", (d["id"],))
+        env = {"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x", "SEND_HOURS": "0-24", "SEND_WEEKDAYS_ONLY": "false",
+               "WARMUP": "false", "TEST_RECIPIENT": ""}
+        with mock.patch.dict(os.environ, env):
+            report = mailer.send_approved(50, True)  # dry run: the preview the Review & send button shows
+        mine = [e for e in report["sent"] if e.get("draft_id") == d["id"]]
+        self.assertEqual(len(mine), 1)
+        self.assertIn("I've attached a 4-page deck", mine[0]["preview"])
+        self.assertEqual(mine[0]["attachments"], ["Deckco plan.pdf"])
+
+
 class GmailFriendlyTests(unittest.TestCase):
     def client(self):
         from starlette.testclient import TestClient
