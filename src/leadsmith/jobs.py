@@ -134,6 +134,15 @@ PROMPTS: dict[str, tuple[str, str]] = {
 }
 
 
+def _already_have() -> str:
+    """The companies already in the pipeline, so a search doesn't spend its effort finding them again."""
+    domains = db.known_domains(200)
+    if not domains:
+        return ""
+    return ("\nAlready in my pipeline (do NOT find or save these again; I want NEW companies, so keep searching until you "
+            f"have the number asked for): {', '.join(domains)}")
+
+
 def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
     title_t, prompt_t = PROMPTS[kind]
     domains = [db.normalize_domain(d) for d in params.get("domains") or [] if d.strip()]
@@ -141,7 +150,7 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
     values = {
         "count": int(params.get("count") or 10),
         "focus_title": f": {focus[:40]}" if focus else "",
-        "focus_line": f"\nFocus from the user: {focus}" if focus else "",
+        "focus_line": (f"\nFocus from the user: {focus}" if focus else "") + _already_have(),
         "domains": ", ".join(domains),
         "domains_short": ", ".join(domains[:3]) + (f" +{len(domains) - 3}" if len(domains) > 3 else ""),
         "website": db.normalize_domain(params.get("website") or ""),

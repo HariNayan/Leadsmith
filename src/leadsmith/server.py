@@ -269,9 +269,13 @@ def quality_check(domains: list[str]) -> dict:
 
 
 @mcp.tool()
-def check_known(domains: list[str]) -> dict:
-    """Before researching, check which domains are already in the pipeline or on the do-not-contact list."""
-    return db.known(domains)
+def check_known(domains: list[str], names: list[str] | None = None) -> dict:
+    """Before researching, check which companies are already in the pipeline or on the do-not-contact list.
+
+    Pass `names` (company names, same order as `domains`) to also catch the same company under another domain
+    (a subdomain, acme.in vs acme.com) or spelling. `duplicate_of` says which saved company it matches and why.
+    Drop every candidate with in_pipeline true: the user wants NEW companies, not ones already found."""
+    return db.known(domains, names)
 
 
 @mcp.tool()
@@ -291,11 +295,18 @@ def save_account(
     research: str | None = None,
     status: Literal["new", "researched", "ready", "contacted", "replied", "meeting", "won", "lost", "disqualified"] | None = None,
     source: str | None = None,
+    new_lead: bool = False,
 ) -> dict:
     """Create or update a target account. Only the fields you pass are changed.
 
+    A company that is already in the pipeline (same domain, a subdomain or other domain of the same company, same
+    LinkedIn page or same name) is REJECTED when you are discovering new leads: nothing is saved and the result has
+    duplicate=true. Drop it and find a different company; keep going until you have the number asked for.
+
     Args:
         domain: company domain (the key)
+        new_lead: pass true when you FOUND this company just now (the Signal Scout always does). Then even an exact
+                  domain match is rejected. Leave false only when updating a company you already have (research).
         fit_score: 0-10, how well they match the ICP
         intent_score: 0-10, how strong and recent the buying signals are
         why_now: one sentence: the timely reason to reach out, citing signals
@@ -306,6 +317,13 @@ def save_account(
         location: city and country of the people you'll email, e.g. "San Francisco, US"
         timezone: their IANA time zone if you know it, e.g. "America/Los_Angeles" (else guessed from location); emails only go out in their business hours
     """
+    clash = db.find_duplicate(domain, name, linkedin_url)
+    if clash and (clash["domain"] != db.normalize_domain(domain) or new_lead):
+        db.log_event("duplicate_rejected", f"{domain} is {clash['why']} as {clash['domain']}", None, clash["domain"])
+        return {"created": False, "duplicate": True, "saved": False,
+                "duplicate_of": {"domain": clash["domain"], "name": clash["name"], "status": clash["status"], "why": clash["why"]},
+                "message": f"Not saved: already in the pipeline as {clash['domain']} ({clash['why']}). "
+                           "Skip this company and find a different one."}
     account, created = db.upsert_account(
         domain, name=name, industry=industry, employees=employees, location=location,
         timezone=schedule.valid_zone(timezone) or schedule.guess_timezone(location), linkedin_url=linkedin_url,

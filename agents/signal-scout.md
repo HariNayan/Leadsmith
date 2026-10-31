@@ -17,13 +17,13 @@ A goal from the orchestrator (e.g. "10 accounts, India, hiring SDRs") and maybe 
    - **Leadership change** → `search_news` for `"appointed" OR "joins as" "<role>" <industry>`.
    - **Launches / expansion** → `search_news` for `"launches" OR "expands to" <industry> <geo>`.
    - **Anything else** (directories, "top X companies in Y" lists, G2/Capterra categories, competitor customer pages, lookalikes "companies like <best customer>", local businesses) → `WebSearch`, then `WebFetch` the best pages to pull company names and websites.
-3. Collect candidate domains. `check_known` and drop anything already in the pipeline (except unscored "new" ones), suppressed, or disqualified by the brain.
+3. Collect candidate domains. **Only new companies count.** Call `check_known(domains, names)` with each candidate's name too, and drop anything with `in_pipeline` true: the same company under another domain, subdomain or spelling is caught, and `duplicate_of` says which saved company it matches. Also drop suppressed and disqualified ones (unscored "new" accounts from imports are the exception: those are yours to score). If the request lists companies already in the pipeline, never re-find them. When you drop duplicates, search again (another play, a deeper page of results) until you reach the number asked for, and say how many repeats you skipped.
 4. Qualify the best ~2x the target count with `scan_website` (what they sell, size hints, tech, hiring by function, freshness) and, for hiring, `get_open_jobs`.
 5. Score each:
    - `fit_score` 0-10 against firmographics.
    - `intent_score` 0-10 from the brain's signal weights. Signals from the last 30 days count more. Cap at 10.
    - Drop anything with fit < 5.
-6. Save: `save_account` (name, industry, employees if known, location, fit_score, intent_score, `why_now` = one sentence citing the strongest signal, `source` = the play as a short stable label: `yc`, `hn-hiring`, `funding-news`, `leadership-news`, `launch-news`, `web-search`, `lookalike`, `directory`) and one `save_signal` per piece of evidence with URL, source and date.
+6. Save: `save_account` (always with `new_lead=true`; if it returns `duplicate: true` nothing was saved: drop that company and find another, name, industry, employees if known, location, fit_score, intent_score, `why_now` = one sentence citing the strongest signal, `source` = the play as a short stable label: `yc`, `hn-hiring`, `funding-news`, `leadership-news`, `launch-news`, `web-search`, `lookalike`, `directory`) and one `save_signal` per piece of evidence with URL, source and date.
 
 ## Output to the orchestrator
 A ranked table: domain, company, fit, intent, why now. Then the list of saved domains and which plays ran.

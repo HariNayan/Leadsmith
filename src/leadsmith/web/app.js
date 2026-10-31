@@ -776,7 +776,7 @@ function addCompaniesModal() {
       const domains = $("#a-domains", root).value;
       if (research && !(await ensureEngine())) throw cancelled;
       const r = await api("/api/accounts", { method: "POST", body: { domains, research } });
-      toast(`Added ${plural(r.added.length, "company", "companies")}${r.skipped_suppressed.length ? `, skipped ${r.skipped_suppressed.length} on your do-not-contact list` : ""}`);
+      toast(`Added ${plural(r.added.length, "company", "companies")}${r.skipped_suppressed.length ? `, skipped ${r.skipped_suppressed.length} on your do-not-contact list` : ""}${(r.skipped_duplicates || []).length ? `, skipped ${plural(r.skipped_duplicates.length, "repeat")} (${r.skipped_duplicates.slice(0, 2).map((d) => `${esc(d.domain)} is already ${esc(d.matches)}`).join("; ")}${r.skipped_duplicates.length > 2 ? "…" : ""})` : ""}`);
       render();
     },
   });

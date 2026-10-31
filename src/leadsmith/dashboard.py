@@ -152,16 +152,21 @@ async def add_accounts(request: Request) -> Response:
         raise ApiError("Enter at least one website, business name or email.")
     if data.get("research"):
         _require_engine()  # before adding anything, so a missing agent doesn't leave half the work done
-    known = db.known(domains)
-    added = []
+    known = db.known(domains, [names[d] for d in domains])
+    added: list[str] = []
+    repeats: list[dict[str, str]] = []
     for d in domains:
         if known[d]["suppressed"]:
+            continue
+        if known[d]["duplicate_of"] and known[d]["duplicate_of"]["domain"] != d:  # a different spelling of one you have
+            repeats.append({"domain": d, "matches": known[d]["duplicate_of"]["domain"], "why": known[d]["duplicate_of"]["why"]})
             continue
         db.upsert_account(d, name=names[d], source="manual")
         added.append(d)
     job = jobs.start("research", {"domains": added, "extra": data.get("extra")}, _require_engine(),
                      _connected["engine"]) if data.get("research") and added else None
-    return ok({"added": added, "skipped_suppressed": [d for d in domains if known[d]["suppressed"]], "job": job})
+    return ok({"added": added, "skipped_suppressed": [d for d in domains if known[d]["suppressed"]],
+               "skipped_duplicates": repeats, "job": job})
 
 
 async def get_account(request: Request) -> Response:

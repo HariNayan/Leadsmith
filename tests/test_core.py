@@ -1173,6 +1173,71 @@ class PreviewWhileSendingTests(unittest.TestCase):
             self.assertNotIn("note", mailer.send_approved(10, True))
 
 
+class DuplicateLeadTests(unittest.TestCase):
+    def setUp(self):
+        import uuid
+
+        self.tag = uuid.uuid4().hex[:6]
+        self.site = f"northwind{self.tag}.com"
+        db.upsert_account(self.site, name=f"Northwind {self.tag} Inc.", linkedin_url=f"https://linkedin.com/company/nw{self.tag}")
+
+    def test_find_duplicate_catches_other_spellings_of_the_same_company(self):
+        t = self.tag
+        why = lambda domain, name=None, li=None: (db.find_duplicate(domain, name, li) or {}).get("why", "")  # noqa: E731
+        self.assertIn("same domain", why(f"www.northwind{t}.com"))
+        self.assertIn("same website", why(f"app.northwind{t}.com"))
+        self.assertIn("same brand", why(f"northwind{t}.in"))  # no name given: the domain brand is enough
+        self.assertIn("same company name", why(f"northwind{t}.in", f"Northwind {t}"))
+        self.assertIn("same company name", why(f"nw-labs-{t}.io", f"Northwind {t}"))
+        self.assertIn("LinkedIn", why(f"other-{t}.io", None, f"https://linkedin.com/company/nw{t}/"))
+        # a different company that merely shares a word is not a repeat
+        self.assertEqual(why(f"northwind{t}.in", "Totally Different Ltd"), "")
+        self.assertEqual(why(f"brandnew-{t}.io", f"Brand New {t}"), "")
+
+    def test_save_account_rejects_repeats_when_discovering_and_keeps_updates_working(self):
+        from leadsmith import server
+
+        t = self.tag
+        repeat = server.save_account(f"northwind{t}.in", name=f"Northwind {t}", new_lead=True)
+        self.assertTrue(repeat["duplicate"])
+        self.assertFalse(repeat["created"])
+        self.assertEqual(repeat["duplicate_of"]["domain"], self.site)
+        self.assertIsNone(db.find_duplicate(f"northwind{t}.in", "Totally Different Ltd"))  # nothing was written for it
+        with db.connect() as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM accounts WHERE domain = ?", (f"northwind{t}.in",)).fetchone())
+        # the exact domain is rejected too when it's a freshly found lead...
+        self.assertTrue(server.save_account(self.site, name="Northwind", new_lead=True)["duplicate"])
+        # ...but research updating a company you already have still works
+        updated = server.save_account(self.site, why_now="Opened a new office")
+        self.assertFalse(updated.get("duplicate"))
+        self.assertEqual(updated["account"]["why_now"], "Opened a new office")
+        # a genuinely new company is saved
+        fresh = server.save_account(f"fresh-{t}.io", name=f"Fresh {t}", new_lead=True)
+        self.assertTrue(fresh["created"])
+
+    def test_check_known_and_manual_add_report_repeats(self):
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard, server
+
+        t = self.tag
+        known = server.check_known([f"app.northwind{t}.com", f"brandnew-{t}.io"], [f"Northwind {t}", f"Brand New {t}"])
+        self.assertTrue(known[f"app.northwind{t}.com"]["in_pipeline"])
+        self.assertEqual(known[f"app.northwind{t}.com"]["duplicate_of"]["domain"], self.site)
+        self.assertFalse(known[f"brandnew-{t}.io"]["in_pipeline"])
+        client = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        r = client.post("/api/accounts", json={"domains": f"app.northwind{t}.com\nbrandnew-{t}.io"}).json()
+        self.assertEqual(r["added"], [f"brandnew-{t}.io"])
+        self.assertEqual(r["skipped_duplicates"][0]["matches"], self.site)
+
+    def test_find_buyers_prompt_lists_what_is_already_in_the_pipeline(self):
+        from leadsmith import jobs
+
+        title, prompt = jobs._fmt("find_buyers", {"count": 5})
+        self.assertIn("Already in my pipeline", prompt)
+        self.assertIn(self.site, prompt)
+
+
 class GmailFriendlyTests(unittest.TestCase):
     def client(self):
         from starlette.testclient import TestClient

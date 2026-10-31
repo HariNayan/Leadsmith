@@ -316,17 +316,81 @@ def add_signal(domain: str, type: str, title: str, detail: str | None = None, ur
         return cur.rowcount > 0
 
 
-def known(domains: list[str]) -> dict[str, dict[str, Any]]:
-    result: dict[str, dict[str, Any]] = {}
+_SECOND_LEVEL = {"co", "com", "org", "net", "gov", "ac", "edu"}
+_NAME_NOISE = re.compile(r"\(.*?\)|\b(inc|ltd|llc|gmbh|pvt|hq|labs|co|corp|limited|the|official|academy|app)\b")
+
+
+def registrable(domain: str) -> str:
+    """acme.co.uk -> acme.co.uk, quest.finology.in -> finology.in"""
+    parts = normalize_domain(domain).split(".")
+    if len(parts) > 2 and parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else ".".join(parts)
+
+
+def _brand(domain: str) -> str:
+    return registrable(domain).split(".")[0]
+
+
+def _name_key(name: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", _NAME_NOISE.sub("", (name or "").lower()))
+
+
+def find_duplicate(domain: str, name: str | None = None, linkedin_url: str | None = None) -> dict[str, Any] | None:
+    """The company in the pipeline that this is probably the same as, with the reason, or None.
+    Catches the same domain, a subdomain of it, the same LinkedIn page, the same company name, and the same
+    brand on a different domain ending (acme.com / acme.in)."""
+    domain = normalize_domain(domain)
+    no_site = domain.endswith(NO_WEBSITE)
+    key, brand, reg = _name_key(name), _brand(domain), registrable(domain)
+    linkedin = (linkedin_url or "").strip().rstrip("/").lower()
     with connect() as conn:
-        for raw in domains:
+        accounts = rows(conn.execute("SELECT domain, name, linkedin_url, status FROM accounts"))
+    near: dict[str, Any] | None = None
+    for a in accounts:
+        other = a["domain"]
+        if other == domain:
+            return {**a, "why": "the same domain"}
+        if near:
+            continue
+        reason = None
+        if linkedin and (a.get("linkedin_url") or "").strip().rstrip("/").lower() == linkedin:
+            reason = "the same LinkedIn page"
+        elif not no_site and not other.endswith(NO_WEBSITE) and registrable(other) == reg:
+            reason = f"the same website ({other} and {domain})"
+        else:
+            other_key = _name_key(a.get("name"))
+            if key and len(key) >= 4 and key == other_key:
+                reason = "the same company name"
+            elif (not no_site and not other.endswith(NO_WEBSITE) and len(brand) >= 5 and _brand(other) == brand
+                  and (not key or not other_key or key in other_key or other_key in key)):
+                reason = f"the same brand on another domain ({other} and {domain})"
+        if reason:
+            near = {**a, "why": reason}
+    return near
+
+
+def known_domains(limit: int = 250) -> list[str]:
+    """Every company already in the pipeline, most recent first, so agents can avoid finding them again."""
+    with connect() as conn:
+        return [r["domain"] for r in rows(conn.execute("SELECT domain FROM accounts ORDER BY updated_at DESC LIMIT ?", (limit,)))
+                if not r["domain"].endswith(NO_WEBSITE)]
+
+
+def known(domains: list[str], names: list[str | None] | None = None) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    names = names or []
+    with connect() as conn:
+        for index, raw in enumerate(domains):
             domain = normalize_domain(raw)
             account = one(conn.execute(
                 "SELECT status, fit_score, intent_score, updated_at FROM accounts WHERE domain = ?", (domain,)
             ))
             suppressed = one(conn.execute("SELECT reason FROM suppression WHERE value = ?", (domain,)))
+            duplicate = find_duplicate(domain, names[index] if index < len(names) else None)
             result[domain] = {
-                "in_pipeline": bool(account),
+                "in_pipeline": bool(account) or bool(duplicate),
+                "duplicate_of": {"domain": duplicate["domain"], "name": duplicate["name"], "why": duplicate["why"]} if duplicate else None,
                 "status": account["status"] if account else None,
                 "suppressed": bool(suppressed),
                 "suppressed_reason": suppressed["reason"] if suppressed else None,
