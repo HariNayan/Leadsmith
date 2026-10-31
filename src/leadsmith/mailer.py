@@ -260,10 +260,18 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
         return {"sent": [], "error": "Sending is off. Turn it on in Settings. Nothing was sent."}
     if live and not (status["gmail_address"] and status["app_password_set"]):
         return {"sent": [], "error": "Connect Gmail in Settings first. Nothing was sent."}
-    if not _SEND_LOCK.acquire(timeout=1):
-        return {"sent": [], "skipped": [], "error": "Another send is already running. Try again in a minute."}
+    # Only real sends need the lock. A preview never sends or claims anything, so it must work even while a
+    # batch is going out (one email a minute) or automatic follow-ups are sending.
+    held = False
+    if live:
+        if not _SEND_LOCK.acquire(timeout=1):
+            return {"sent": [], "skipped": [], "error": "A batch is already sending (one email a minute). "
+                                                        "Watch it on the Outreach page, or try again when it finishes."}
+        held = True
     try:
         report: dict[str, Any] = {"dry_run": not live, "sent": [], "skipped": [], "overdue": []}
+        if not live and (PROGRESS.get("running") or _SEND_LOCK.locked()):
+            report["note"] = "A batch is sending right now. Anything it hasn't sent yet is shown here too."
         # Never follow up someone who answered while the dashboard was closed.
         if status["app_password_set"] and (live or dry_run):
             try:
@@ -387,7 +395,8 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
                 PROGRESS.update(running=False, next_at=None, finished_at=db.now(), stopped=bool(report.get("stopped")))
         return report
     finally:
-        _SEND_LOCK.release()
+        if held:
+            _SEND_LOCK.release()
 
 
 def send_test(draft_id: int) -> dict[str, Any]:

@@ -1153,6 +1153,26 @@ class AttachedPreviewTests(unittest.TestCase):
         self.assertEqual(mine[0]["attachments"], ["Deckco plan.pdf"])
 
 
+class PreviewWhileSendingTests(unittest.TestCase):
+    def test_preview_works_while_a_batch_is_sending_but_a_second_send_waits(self):
+        from unittest import mock
+
+        from leadsmith import mailer
+
+        env = {"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x", "SEND_ENABLED": "true", "TEST_RECIPIENT": ""}
+        with mock.patch.dict(os.environ, env), mock.patch.object(mailer, "check_replies", return_value={"replies": [], "bounces": []}):
+            self.assertTrue(mailer._SEND_LOCK.acquire(timeout=1))  # a real batch is going out
+            try:
+                preview = mailer.send_approved(10, True)
+                self.assertNotIn("error", preview)
+                self.assertIn("sending right now", preview.get("note", ""))
+                second = mailer.send_approved(10, False)
+                self.assertIn("already sending", second["error"])
+            finally:
+                mailer._SEND_LOCK.release()
+            self.assertNotIn("note", mailer.send_approved(10, True))
+
+
 class GmailFriendlyTests(unittest.TestCase):
     def client(self):
         from starlette.testclient import TestClient
