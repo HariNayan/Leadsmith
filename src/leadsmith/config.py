@@ -71,7 +71,9 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
     "SEND_WEEKDAYS_ONLY": ("Weekdays only", "bool", "true", ""),
     "PROSPECT_TIMEZONE": ("Default time zone", "text", "",
                           "Used when a prospect's location is unknown. Empty = your time zone."),
-    "SEND_ENABLED": ("Sending enabled", "bool", "false", "Nothing is sent while this is off."),
+    # Not shown in Settings: sending is on by default (every email still needs Gmail connected and your approval).
+    # SEND_ENABLED=false in .env stops all sending.
+    "SEND_ENABLED": ("Sending enabled", "bool", "true", ""),
     "DAILY_SEND_LIMIT": ("Daily send limit (maximum)", "int", "25", ""),
     "WARMUP": ("Warm-up", "bool", "true",
                "Start low and raise the daily limit each day."),
@@ -81,12 +83,21 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
                          ""),
     "AUTO_FOLLOWUPS": ("Automatic follow-ups", "bool", "true",
                        "Sends due follow-ups while the dashboard is open; stops on reply."),
+    "ALLOW_GUESSED_EMAILS": ("Email guessed addresses", "bool", "false",
+                             "Also email addresses Leadsmith guessed, not just published ones."),
     "EMAIL_STYLE": ("Email style", "text", "idea_menu",
                     "idea_menu: three ideas they pick from with one letter. personal_pitch: one specific compliment, "
                     "what you do for buyers like theirs, a personal deck attached, and a short call ask."),
     "AGENT_ENGINE": ("Agent engine", "engine", "claude",
                      "The coding agent that runs the four agents: claude, codex, opencode or gemini."),
     "AGENT_MODEL": ("Model", "text", "", "Optional. Empty = the engine's own default model."),
+    "USE_SUBAGENTS": ("Use sub-agents", "bool", "false",
+                      "Off (recommended): one agent does each run, which is much faster and cheaper. On: Claude Code "
+                      "splits the work across several agents."),
+    "DECK_ENGINE": ("Deck engine", "text", "opencode",
+                    "Which agent builds decks: opencode (default), claude, codex or gemini. If it isn't installed, "
+                    "the main agent engine builds them."),
+    "DECK_MODEL": ("Deck model", "text", "", "Optional. Empty = the deck engine's own default model."),
     "DECK_COLOR": ("Deck accent colour", "text", "#4f46e5", ""),
     "BETTERCONTACT_API_KEY": ("BetterContact API key", "secret", "",
                               "Optional, paid. Adds a Verify button for guessed emails."),
