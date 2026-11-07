@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS cache (
     value       TEXT NOT NULL,
     expires_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS rejected (
+    domain      TEXT PRIMARY KEY,
+    name        TEXT,
+    reason      TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
 """
 
 ACCOUNT_STATUSES = ("new", "researched", "ready", "contacted", "replied", "meeting", "won", "lost", "disqualified")
@@ -188,7 +195,48 @@ MIGRATIONS = {
     ("drafts", "kind"): "ALTER TABLE drafts ADD COLUMN kind TEXT NOT NULL DEFAULT 'sequence'",
     ("jobs", "engine"): "ALTER TABLE jobs ADD COLUMN engine TEXT",
     ("jobs", "session_id"): "ALTER TABLE jobs ADD COLUMN session_id TEXT",
+    ("accounts", "fit_reason"): "ALTER TABLE accounts ADD COLUMN fit_reason TEXT",
+    ("accounts", "brief"): "ALTER TABLE accounts ADD COLUMN brief TEXT",
+    ("contacts", "extra_emails"): "ALTER TABLE contacts ADD COLUMN extra_emails TEXT",
 }
+
+
+MAX_EXTRA_EMAILS = 5
+
+
+def extra_emails(contact: dict[str, Any] | None) -> list[str]:
+    """The other addresses a person's emails also go to (e.g. the company inbox next to the founder)."""
+    raw = (contact or {}).get("extra_emails") or ""
+    return [e for e in (x.strip().lower() for x in raw.split(",")) if e]
+
+
+def set_extra_emails(contact_id: int, emails: list[str]) -> list[str]:
+    """Replace the extra recipients of a person's emails. Duplicates, the main address and blanks are dropped."""
+    contact = get_contact(contact_id)
+    if not contact:
+        raise ValueError("Unknown person")
+    main = (contact.get("email") or "").lower()
+    clean: list[str] = []
+    for email in (e.strip().lower() for e in emails):
+        if email and email != main and email not in clean:
+            clean.append(email)
+    if len(clean) > MAX_EXTRA_EMAILS:
+        raise ValueError(f"Up to {MAX_EXTRA_EMAILS} extra addresses per person.")
+    with connect() as conn:
+        conn.execute("UPDATE contacts SET extra_emails = ?, updated_at = ? WHERE id = ?",
+                     (",".join(clean) or None, now(), contact_id))
+    return clean
+
+
+def set_brief(domains: list[str], brief: str) -> None:
+    """Remember the user's search brief (what to offer, to whom) on the accounts it found, so every later deck,
+    email and rewrite pitches that offer. An account keeps the brief it was first found for."""
+    brief = (brief or "").strip()
+    if not brief or not domains:
+        return
+    with connect() as conn:
+        conn.executemany("UPDATE accounts SET brief = ? WHERE domain = ? AND (brief IS NULL OR brief = '')",
+                         [(brief[:4000], normalize_domain(d)) for d in domains])
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -266,9 +314,25 @@ def cache_set(key: str, value: Any, ttl_hours: float) -> None:
 # ── accounts and signals ─────────────────────────────────────────────────
 
 ACCOUNT_FIELDS = (
-    "name", "industry", "employees", "location", "timezone", "linkedin_url", "summary", "fit_score",
+    "name", "industry", "employees", "location", "timezone", "linkedin_url", "summary", "fit_score", "fit_reason",
     "intent_score", "why_now", "angle", "research", "status", "source",
 )
+
+# One fixed set of discovery-source labels for every workspace, so "which sources get replies" means something.
+SOURCE_LABELS = ("yc", "hn-hiring", "wellfound", "betalist", "product-hunt", "f6s", "launch-directories",
+                 "funding-news", "leadership-news", "launch-news", "job-boards", "youtube",
+                 "instagram-search", "x-search", "linkedin-search", "reddit-search", "local-listings",
+                 "company-registers", "directories", "lookalike", "web-search", "import", "manual")
+
+
+def normalize_source(raw: str | None) -> str | None:
+    """The fixed label for a source an agent or an older version wrote ("websearch", "LinkedIn: founders Berlin").
+    None when it can't be matched to a label."""
+    if not raw or not raw.strip():
+        return None
+    key = re.split(r"[\s:(+,]", raw.strip().lower())[0].strip() or ""
+    key = SOURCE_ALIASES.get(key, key)
+    return key if key in SOURCE_LABELS else None
 
 
 def upsert_account(domain: str, **fields: Any) -> tuple[dict[str, Any], bool]:
@@ -336,6 +400,17 @@ def _name_key(name: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", _NAME_NOISE.sub("", (name or "").lower()))
 
 
+def linkedin_key(url: str | None) -> str:
+    """One form for every way a LinkedIn profile or page link is written: "in/priya-sharma" or "company/acme".
+    Search results mix www., country subdomains (in., uk.), http/https, trailing slashes and tracking parameters."""
+    from urllib.parse import unquote
+
+    match = re.search(r"linkedin\.com/(in|company|school|showcase)/([^/?#\s]+)", unquote(url or ""), re.I)
+    if match:
+        return f"{match.group(1).lower()}/{match.group(2).lower()}"
+    return (url or "").strip().rstrip("/").lower()
+
+
 def find_duplicate(domain: str, name: str | None = None, linkedin_url: str | None = None) -> dict[str, Any] | None:
     """The company in the pipeline that this is probably the same as, with the reason, or None.
     Catches the same domain, a subdomain of it, the same LinkedIn page, the same company name, and the same
@@ -343,7 +418,7 @@ def find_duplicate(domain: str, name: str | None = None, linkedin_url: str | Non
     domain = normalize_domain(domain)
     no_site = domain.endswith(NO_WEBSITE)
     key, brand, reg = _name_key(name), _brand(domain), registrable(domain)
-    linkedin = (linkedin_url or "").strip().rstrip("/").lower()
+    linkedin = linkedin_key(linkedin_url)
     with connect() as conn:
         accounts = rows(conn.execute("SELECT domain, name, linkedin_url, status FROM accounts"))
     near: dict[str, Any] | None = None
@@ -354,7 +429,7 @@ def find_duplicate(domain: str, name: str | None = None, linkedin_url: str | Non
         if near:
             continue
         reason = None
-        if linkedin and (a.get("linkedin_url") or "").strip().rstrip("/").lower() == linkedin:
+        if linkedin and linkedin_key(a.get("linkedin_url")) == linkedin:
             reason = "the same LinkedIn page"
         elif not no_site and not other.endswith(NO_WEBSITE) and registrable(other) == reg:
             reason = f"the same website ({other} and {domain})"
@@ -388,14 +463,38 @@ def known(domains: list[str], names: list[str | None] | None = None) -> dict[str
             ))
             suppressed = one(conn.execute("SELECT reason FROM suppression WHERE value = ?", (domain,)))
             duplicate = find_duplicate(domain, names[index] if index < len(names) else None)
+            rejected = one(conn.execute("SELECT reason, created_at FROM rejected WHERE domain = ? AND created_at >= ?",
+                                        (domain, _days_ago(REJECTED_DAYS))))
             result[domain] = {
                 "in_pipeline": bool(account) or bool(duplicate),
                 "duplicate_of": {"domain": duplicate["domain"], "name": duplicate["name"], "why": duplicate["why"]} if duplicate else None,
                 "status": account["status"] if account else None,
                 "suppressed": bool(suppressed),
                 "suppressed_reason": suppressed["reason"] if suppressed else None,
+                "rejected": bool(rejected),
+                "rejected_reason": f"{rejected['reason']} (checked {rejected['created_at'][:10]})" if rejected else None,
             }
     return result
+
+
+REJECTED_DAYS = 120  # a screened-out candidate is skipped this long; businesses change, so it's checked again after
+
+
+def _days_ago(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
+def save_rejected(domain: str, name: str | None, reason: str) -> dict[str, Any]:
+    """Remember a candidate that was screened and isn't a fit, so later runs don't spend time on it again."""
+    domain = normalize_domain(domain)
+    if not domain or not (reason or "").strip():
+        raise ValueError("domain and reason are required")
+    with connect() as conn:
+        if one(conn.execute("SELECT 1 FROM accounts WHERE domain = ?", (domain,))):
+            return {"saved": False, "note": f"{domain} is in the pipeline: disqualify it there instead."}
+        conn.execute("INSERT OR REPLACE INTO rejected (domain, name, reason, created_at) VALUES (?, ?, ?, ?)",
+                     (domain, name, reason.strip()[:300], now()))
+    return {"saved": True}
 
 
 def pipeline(status: str | None = None, min_score: int | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -511,6 +610,14 @@ def set_contact_email(contact_id: int, email: str | None, status: str, note: str
     return get_contact(contact_id) or {}
 
 
+# Leads found before proof of need existed aren't failed for lacking it (compared with UTC created_at stamps).
+NEED_REQUIRED_SINCE = "2026-11-06T19:30:00+00:00"
+
+
+def is_guessed(email_status: str | None) -> bool:
+    return (email_status or "").strip().lower().startswith("guess")
+
+
 def quality_report(domains: list[str]) -> dict[str, Any]:
     """What isn't genuine or specific enough yet, per account: unsourced signals, no reason to buy now, missing or
     guessed emails, drafts that fail lint or don't mention the company. Used by agents before they finish."""
@@ -533,15 +640,28 @@ def quality_report(domains: list[str]) -> dict[str, Any]:
                 issues.append({"domain": domain, "level": "WARN", "issue": f"{len(undated)} signal(s) have no date: {undated[0][:60]}"})
             if not (account.get("why_now") or "").strip():
                 issues.append({"domain": domain, "level": "FAIL", "issue": "No why_now: say the specific reason to reach out now."})
+            discovered = normalize_source(account.get("source")) not in ("import", "manual")
+            if discovered and (account.get("created_at") or "") >= NEED_REQUIRED_SINCE:
+                need = one(conn.execute("SELECT 1 FROM signals WHERE domain = ? AND type = 'need' AND url IS NOT NULL"
+                                        " AND url != ''", (domain,)))
+                if not need:
+                    issues.append({"domain": domain, "level": "FAIL", "issue": "No proof of need: save a 'need' signal with "
+                                   "the page showing one of the profile's buying signals, or drop this company."})
+                if (account.get("fit_score") or 0) >= 8 and not (account.get("fit_reason") or "").strip():
+                    issues.append({"domain": domain, "level": "WARN", "issue": "Fit 8+ with no fit_reason: list the ICP "
+                                   "criteria met, missed and unknown, and re-score."})
             contacts = rows(conn.execute("SELECT id, first_name, email, email_status FROM contacts WHERE domain = ?", (domain,)))
             if not contacts:
                 issues.append({"domain": domain, "level": "WARN", "issue": "No contact saved."})
+            guessed_ok = config.get_bool("ALLOW_GUESSED_EMAILS", False)
             for c in contacts:
                 who = c["first_name"] or c["email"] or f"contact {c['id']}"
                 if not c["email"]:
                     issues.append({"domain": domain, "level": "WARN", "issue": f"{who} has no email."})
-                elif c["email_status"] == "guessed":
-                    issues.append({"domain": domain, "level": "INFO", "issue": f"{who}'s email is guessed; look for a published one."})
+                elif is_guessed(c["email_status"]):
+                    issues.append({"domain": domain, "level": "INFO" if guessed_ok else "WARN",
+                                   "issue": f"{who}'s email is guessed; look for a published one." + (
+                                       "" if guessed_ok else " Guessed addresses aren't written to or sent.")})
                 for d in rows(conn.execute("SELECT step, subject, body, lint FROM drafts WHERE contact_id = ? AND status IN"
                                            " ('draft', 'approved') AND channel = 'email'", (c["id"],))):
                     result = json.loads(d["lint"]) if d["lint"] else {}
@@ -628,7 +748,7 @@ def drafts(status: str | None = None, limit: int = 100, domain: str | None = Non
         SELECT d.id, d.step, d.channel, d.subject, d.body, d.status, d.send_after_days, d.lint, d.sent_at, d.kind,
                d.attach_deck, d.updated_at,
                c.id AS contact_id, c.first_name, c.last_name, c.title, c.email, c.email_status, c.domain,
-               c.notes AS contact_notes, c.linkedin_url,
+               c.notes AS contact_notes, c.linkedin_url, c.extra_emails,
                a.name AS company
         FROM drafts d JOIN contacts c ON c.id = d.contact_id LEFT JOIN accounts a ON a.domain = c.domain
         WHERE 1 = 1
@@ -790,6 +910,31 @@ def set_feedback(domain: str, verdict: str | None, reason: str | None = None) ->
     return {"domain": domain, "feedback": verdict, "reason": reason}
 
 
+def results_so_far(limit: int = 25) -> dict[str, Any]:
+    """What has worked in this workspace (and only this one): accounts whose people replied, said they're not
+    interested, or booked a meeting, plus the source stats. Agents look for more like the winners."""
+    cols = "a.domain, a.name, a.industry, a.employees, a.location, a.source, a.fit_score, a.why_now"
+    with connect() as conn:
+        replied = rows(conn.execute(
+            f"SELECT DISTINCT {cols}, a.status FROM accounts a JOIN contacts c ON c.domain = a.domain"
+            " WHERE c.reply_kind = 'reply' OR c.status IN ('replied', 'meeting') OR a.status IN ('meeting', 'won')"
+            " ORDER BY a.updated_at DESC LIMIT ?", (limit,)))
+        declined = rows(conn.execute(
+            f"SELECT DISTINCT {cols} FROM accounts a JOIN contacts c ON c.domain = a.domain"
+            " WHERE c.reply_kind = 'not_interested' ORDER BY a.updated_at DESC LIMIT ?", (limit,)))
+        verdicts = conn.execute("SELECT COUNT(*) FROM accounts WHERE feedback IS NOT NULL").fetchone()[0]
+    learning = len(replied) < 3 and verdicts < 5
+    return {
+        "learning": learning,
+        "how_to_use": ("Little history yet: rely on the business profile, and keep the results below in mind." if learning
+                       else "Find more like `replied` (same kind of business, size, place, source) and fewer like "
+                            "`declined`. Favour sources with replies."),
+        "replied": replied, "declined": declined,
+        "sources": [s for s in source_stats() if s["contacted"] or s["good"] or s["bad"]],
+        "verdicts_given": verdicts,
+    }
+
+
 def lead_feedback(limit: int = 40) -> list[dict[str, Any]]:
     """Recent verdicts the agents learn from: which kinds of companies the user wants, and which they don't."""
     with connect() as conn:
@@ -798,8 +943,19 @@ def lead_feedback(limit: int = 40) -> list[dict[str, Any]]:
             " FROM accounts WHERE feedback IS NOT NULL ORDER BY feedback_at DESC LIMIT ?", (limit,)))
 
 
-SOURCE_ALIASES = {"web": "websearch", "web-search": "websearch", "google": "websearch", "hn": "hn-hiring",
-                  "ycombinator": "yc", "ph": "producthunt", "product": "producthunt", "funding": "funding-news"}
+SOURCE_ALIASES = {"web": "web-search", "websearch": "web-search", "google": "web-search", "hn": "hn-hiring",
+                  "ycombinator": "yc", "funding": "funding-news",
+                  "linkedin": "linkedin-search", "linkedin-via-search": "linkedin-search", "li": "linkedin-search",
+                  "reddit": "reddit-search", "r": "reddit-search", "instagram": "instagram-search", "ig": "instagram-search",
+                  "insta": "instagram-search", "x": "x-search", "twitter": "x-search", "tweet": "x-search",
+                  "threadreader": "x-search", "twitter-search": "x-search",
+                  # labels earlier versions and agents used, mapped onto the fixed set
+                  "hiring-boards": "job-boards", "jobs": "job-boards", "youtube-discovery": "youtube", "yt": "youtube",
+                  "directory": "directories", "csv": "import", "imported": "import", "user-target": "manual",
+                  "user": "manual", "dashboard": "manual", "maps": "local-listings", "google-maps": "local-listings",
+                  "registry": "company-registers", "producthunt": "product-hunt", "ph": "product-hunt",
+                  "product": "product-hunt", "angellist": "wellfound", "althunt": "launch-directories",
+                  "launch-directory": "launch-directories"}
 
 
 def source_stats() -> list[dict[str, Any]]:
@@ -814,8 +970,7 @@ def source_stats() -> list[dict[str, Any]]:
     stats: dict[str, dict[str, Any]] = {}
     for a in accounts:
         raw = (a["source"] or "unknown").strip().lower()
-        key = re.split(r"[\s:(+]", raw)[0].strip() or "unknown"
-        key = SOURCE_ALIASES.get(key, key)
+        key = normalize_source(raw) or (re.split(r"[\s:(+]", raw)[0].strip() or "unknown")
         row = stats.setdefault(key, {"source": key, "leads": 0, "good": 0, "bad": 0, "contacted": 0, "replied": 0, "meetings": 0})
         row["leads"] += 1
         row["good"] += a["feedback"] == "good"
