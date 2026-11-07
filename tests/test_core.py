@@ -467,6 +467,10 @@ class EngineTests(unittest.TestCase):
 
         from leadsmith import config, engines
 
+        # OpenCode 1's config format (OpenCode 2 blocks these server-side: see OpenCodeV2Tests).
+        v1 = mock.patch.object(type(engines.ENGINES["opencode"]), "version", lambda self: (1, 0, 0))
+        v1.start()
+        self.addCleanup(v1.stop)
         for key, engine in engines.ENGINES.items():
             with mock.patch.object(engine, "path", return_value=key):
                 cmd, env = engine.command("")
@@ -510,7 +514,17 @@ class EngineTests(unittest.TestCase):
         self.assertIn("You don't have sub-agents", solo)
         self.assertIn("Signal Scout", solo)
         self.assertNotIn("name: signal-scout", solo)  # frontmatter stripped
-        self.assertNotIn("Playbook", jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["claude"]))
+        self.assertNotIn("Outreach Writer", solo)  # a find run stops before writing
+        # Claude Code is one agent by default too; with sub-agents switched on it gets no inline playbooks.
+        claude = engines.ENGINES["claude"]
+        self.assertIn("Playbook", jobs.full_prompt("find_buyers", "Find 5 buyers.", claude))
+        cmd, _ = claude.command("")
+        blocked = cmd[cmd.index("--disallowedTools") + 1].split(",")
+        self.assertIn("Agent", blocked)
+        with mock.patch.object(engines.config, "get_bool", side_effect=lambda k, d=False: k == "USE_SUBAGENTS" or d):
+            self.assertNotIn("Playbook", jobs.full_prompt("find_buyers", "Find 5 buyers.", claude))
+            cmd, _ = claude.command("")
+            self.assertIn("Agent", cmd[cmd.index("--allowedTools") + 1].split(","))
 
     def test_model_lists_for_the_dropdown(self):
         import json as _json
@@ -1072,6 +1086,7 @@ class QualityTests(unittest.TestCase):
         good, bad = f"good-{tag}.io", f"bad-{tag}.io"
         db.upsert_account(good, name="Goodco", why_now="Raised a seed round last week")
         db.add_signal(good, "funding", "Seed round", "$3M", f"https://news.example/{tag}", "news", "2026-10-20")
+        db.add_signal(good, "need", "Hiring their first marketer", None, f"https://{good}/jobs", "website", "2026-10-21")
         c, _ = db.upsert_contact(good, first_name="Ana", email=f"ana@{good}", email_status="public")
         db.upsert_draft(c["id"], 1, "goodco seed round", "Hi Ana, congrats on Goodco's seed round.", "email", 0, {"ok": True, "issues": []})
         db.upsert_account(bad, name="Badco")
@@ -1302,6 +1317,883 @@ class FreeProviderParsingTests(unittest.TestCase):
         found = techdetect.detect(html)
         self.assertIn("HubSpot", found.get("marketing", []))
         self.assertNotIn("ecommerce", found)
+
+
+import json  # noqa: E402
+from unittest import mock  # noqa: E402
+
+
+class HungEngineTests(unittest.TestCase):
+    """An engine CLI that finishes its work but never exits must not leave the run 'running' forever."""
+
+    def engine(self, events):
+        import sys as _sys
+
+        from leadsmith import engines
+
+        class Hangs(engines.Engine):
+            def path(self):
+                return _sys.executable
+
+            def command(self, model, session=None):
+                lines = "".join(f"print({json.dumps(json.dumps(e))}, flush=True); " for e in events)
+                return [_sys.executable, "-c", f"import time; {lines}time.sleep(600)"], {}
+
+        return Hangs("hangs", "Hangs", "hangs", "", "", "", subagents=True)
+
+    def run_job(self, events, **timings):
+        import time as _time
+        from unittest import mock
+
+        from leadsmith import engines, jobs
+
+        with mock.patch.dict(engines.ENGINES, {"hangs": self.engine(events)}), \
+                mock.patch.multiple(jobs, POLL_SECONDS=0.2, **timings):
+            job_id = jobs.start("custom", {"prompt": "go"}, "hangs")["id"]
+            for _ in range(150):
+                job = jobs.get(job_id)
+                if job["status"] not in ("queued", "running"):
+                    return job
+                _time.sleep(0.1)
+        self.fail("the run stayed 'running' after the engine finished")
+
+    def test_closes_after_the_engine_reports_done(self):
+        from leadsmith import engines
+
+        with mock.patch.object(engines.Engine, "parse",
+                               lambda self, e: engines.Parsed(result=e.get("text"), done=e.get("type") == "end")):
+            job = self.run_job([{"type": "end", "text": "Saved 10 accounts."}], EXIT_GRACE_SECONDS=0.5)
+        self.assertEqual((job["status"], job["result"]), ("done", "Saved 10 accounts."))
+        self.assertIn("didn't close by itself", job["log"])
+
+    def test_claude_answer_then_silence_counts_as_done(self):
+        from leadsmith import engines
+
+        answer = {"type": "assistant", "message": {"content": [{"type": "text", "text": "Saved 10 accounts."}]}}
+        with mock.patch.object(engines.Engine, "parse", engines.Claude.parse):
+            job = self.run_job([answer], IDLE_AFTER_ANSWER_SECONDS=0.5)
+        self.assertEqual((job["status"], job["result"]), ("done", "Saved 10 accounts."))
+
+    def test_claude_text_before_a_tool_call_is_not_final(self):
+        from leadsmith import engines
+
+        claude = engines.ENGINES["claude"]
+        mid = claude.parse({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Now searching."}, {"type": "tool_use", "name": "WebSearch", "input": {}}]}})
+        sub = claude.parse({"type": "assistant", "parent_tool_use_id": "x",
+                            "message": {"content": [{"type": "text", "text": "subagent done"}]}})
+        self.assertFalse(mid.final or sub.final)
+        self.assertTrue(claude.parse({"type": "result", "result": "ok"}).done)
+
+
+class CompaniesHouseTests(unittest.TestCase):
+    """Offline: Companies House page shapes, London postcodes and virtual offices."""
+
+    def test_place(self):
+        from leadsmith.providers.companies_house import place
+
+        self.assertEqual(place("71-75 Shelton Street, Covent Garden, London, United Kingdom, WC2H 9JQ"),
+                         {"postcode": "WC2H 9JQ", "london": "yes", "virtual_office": True})
+        self.assertEqual(place("12 Mare Street, London, E8 4RP")["virtual_office"], False)
+        self.assertEqual(place("1 High Street, Kingston upon Thames, KT1 1AA")["london"], "maybe")
+        self.assertEqual(place("59 Bath Street, Glasgow, G2 2DH")["london"], "no")
+
+    def test_search_and_profile(self):
+        from leadsmith.providers import companies_house as ch
+
+        results = """<li class="type-company"><h3><a class="govuk-link" href="/company/09718346" title="View company">
+            LONDON APP DEVELOPER LTD</a></h3><p class="meta crumbtrail"> 09718346 - Incorporated on 5 August 2015 </p>
+            <p>71-75 Shelton Street, Covent Garden, London, United Kingdom, WC2H 9JQ</p></li>"""
+        row = ch.parse_results(results, "company")[0]
+        self.assertEqual((row["number"], row["incorporated"], row["virtual_office"]), ("09718346", "5 August 2015", True))
+        people = """<li class="type-officer"><h3><a class="govuk-link" href="/officers/Vqx/appointments">Mark Alan WINTERBOTTOM</a></h3>
+            <p class="meta crumbtrail">Total number of appointments 1 - Born January 1989</p><p>8 Victoria Street, Denton, Manchester, M34 3JQ</p></li>"""
+        person = ch.parse_results(people, "officer")[0]
+        self.assertEqual((person["born"], person["london"]), ("January 1989", "no"))
+        officers = """<span id="officer-name-1"><a>WINTERBOTTOM, Mark Alan</a></span>
+            <dd id="officer-address-value-1">12 Mare Street, London, E8 4RP</dd><span id="officer-status-tag-1">Active</span>
+            <dd id="officer-role-1">Director</dd><dd id="officer-date-of-birth-1">January 1989</dd>
+            <span id="officer-name-2"><a>OLD, Person</a></span><span id="officer-status-tag-2">Resigned</span>"""
+        parsed = ch.parse_officers(officers)
+        self.assertEqual([o["active"] for o in parsed], [True, False])
+        self.assertEqual(parsed[0]["name"], "WINTERBOTTOM, Mark Alan")
+        self.assertEqual(parsed[0]["correspondence_address"], "12 Mare Street, London, E8 4RP")
+
+
+class OpenCodeV2Tests(unittest.TestCase):
+    """OpenCode 2: config file + private server, no shell or file access, sign-in parsing, tools in Code Mode."""
+
+    def test_v2_command_and_safety(self):
+        import json as _json
+
+        from leadsmith import config, engines
+
+        oc = engines.ENGINES["opencode"]
+        with mock.patch.object(type(oc), "version", lambda self: (2, 2, 5)):
+            cmd, env = oc.command("opencode/mimo-v2.6-flash-free")
+            self.assertIn("--standalone", cmd)
+            self.assertEqual(cmd[cmd.index("--model") + 1], "opencode/mimo-v2.6-flash-free")
+            self.assertEqual(env, {})
+            # The config lives in its own empty run folder, never in the workspace (OpenCode merges parent configs).
+            self.assertEqual(oc.workdir(), config.HOME / "opencode-run")
+            self.assertFalse((config.HOME / "opencode.json").exists())
+            cfg = _json.loads((oc.workdir() / "opencode.json").read_text(encoding="utf-8"))
+            self.assertIn("leadsmith", cfg["mcp"]["servers"])
+            self.assertEqual(cfg["mcp"]["servers"]["leadsmith"]["environment"]["LEADSMITH_AGENT_RUN"], "1")
+            for tool in ("shell", "bash", "edit", "question", "external_directory"):
+                self.assertEqual(cfg["permission"][tool], "deny", tool)
+            # Denying `read` makes OpenCode refuse its free models; reading outside the run folder is denied instead.
+            self.assertNotIn("read", cfg["permission"])
+            self.assertIn("tools.leadsmith", oc.prompt_note())
+        with mock.patch.object(type(oc), "version", lambda self: (1, 4, 0)):
+            cmd, env = oc.command("")
+            self.assertNotIn("--standalone", cmd)
+            self.assertIn("leadsmith", _json.loads(env["OPENCODE_CONFIG_CONTENT"])["mcp"])
+            self.assertEqual(oc.prompt_note(), "")
+            self.assertEqual(oc.workdir(), config.HOME)
+
+    def test_signed_in_reads_the_provider_list(self):
+        from types import SimpleNamespace
+
+        from leadsmith import engines
+
+        oc = engines.ENGINES["opencode"]
+        for text, expected in (("Cloudflare Workers AI  API key                     stored\n", True),
+                               ("\x1b[1m2 credentials\x1b[0m\n", True), ("No credentials found\n", False)):
+            with mock.patch.object(engines, "_run_quiet", return_value=SimpleNamespace(stdout=text)):
+                self.assertEqual(oc.signed_in("opencode")[0], expected, text)
+
+    def test_agent_runs_never_see_approve_or_send(self):
+        import asyncio
+        import importlib
+
+        from leadsmith import server
+
+        server = importlib.reload(server)
+        names = lambda: {t.name for t in asyncio.run(server.mcp.list_tools())}  # noqa: E731
+        self.assertIn("send_approved_emails", names())
+        with mock.patch.dict(os.environ, {"LEADSMITH_AGENT_RUN": "1"}):
+            server.apply_agent_mode()
+        self.assertFalse({"send_approved_emails", "review_drafts"} & names())
+        self.assertIn("save_deck", names())
+        importlib.reload(server)
+
+
+class StartupSourceTests(unittest.TestCase):
+    """Offline: the page shapes Wellfound, BetaList and Product Hunt serve."""
+
+    def test_wellfound_startups_and_job_posts(self):
+        from leadsmith.providers import startups
+
+        state = {
+            "StartupResult:1": {"__typename": "StartupResult", "id": "1", "name": "Zoniqx", "slug": "zoniqx",
+                                "companyUrl": "https://www.zoniqx.com", "highConcept": "Tokenization for real assets",
+                                "companySize": "SIZE_11_50", "badges": [{"__ref": "Badge:ACTIVELY_HIRING"}, {"__ref": "Badge:B2B-1"}],
+                                "marketTaggings": [{"__ref": "MarketTag:fintech"}],
+                                "highlightedJobListings": [{"__ref": "JobListingSearchResult:9"}]},
+            "MarketTag:fintech": {"displayName": "Fintech"},
+            "JobListingSearchResult:9": {"id": "9", "slug": "marketing-manager", "title": "Marketing Manager",
+                                         "liveStartAt": 1792627200, "remote": True, "locationNames": ["India"]},
+        }
+        html = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps({"props": {"pageProps": {"apolloState": {"data": state}}}})}</script>'
+        found = startups.parse_wellfound(startups.apollo_state(html))
+        self.assertEqual(len(found), 1)
+        z = found[0]
+        self.assertEqual((z["name"], z["domain"], z["size"], z["markets"]), ("Zoniqx", "zoniqx.com", "11-50", ["Fintech"]))
+        self.assertEqual(z["badges"], ["actively hiring", "b2b"])
+        self.assertEqual(z["jobs"][0]["title"], "Marketing Manager")
+        self.assertEqual(z["jobs"][0]["url"], "https://wellfound.com/jobs/9-marketing-manager")
+        self.assertTrue(z["jobs"][0]["posted"].startswith("2026-"))
+
+    def test_betalist_and_product_hunt(self):
+        from leadsmith.providers import startups
+
+        page = '<a href="/startups/kelbado-lms"></a><a href="/startups/kelbado-lms"></a><a href="/startups/revenue-scout">x</a>'
+        self.assertEqual(startups.parse_betalist(page), ["/startups/kelbado-lms", "/startups/revenue-scout"])
+        feed = ("<feed><entry><published>2026-11-05T17:53:45-08:00</published>"
+                '<link rel="alternate" type="text/html" href="https://www.producthunt.com/products/cursor-craft"/>'
+                "<title>Cursor Craft</title><content type=\"html\">&lt;p&gt; Custom cursors for Mac &lt;/p&gt;&lt;p&gt;"
+                "&lt;a href=\"x\"&gt;Discussion&lt;/a&gt;&lt;/p&gt;</content><author><name>Birang</name></author></entry></feed>")
+        launch = startups.parse_ph_feed(feed)[0]
+        self.assertEqual((launch["name"], launch["tagline"], launch["launched"], launch["maker"]),
+                         ("Cursor Craft", "Custom cursors for Mac", "2026-11-05", "Birang"))
+
+    def test_startup_source_labels(self):
+        from leadsmith import db
+
+        for raw, label in (("Product Hunt launches", "product-hunt"), ("producthunt", "product-hunt"),
+                           ("wellfound: hiring SDRs", "wellfound"), ("althunt", "launch-directories"), ("f6s", "f6s")):
+            self.assertEqual(db.normalize_source(raw), label, raw)
+
+
+class LeadQualityTests(unittest.TestCase):
+    """Proof of need, rubric fit, fixed source labels, rejected memory, published-only emails, learning, imports."""
+
+    def test_source_labels_are_fixed(self):
+        from leadsmith import db, server
+
+        self.assertEqual(db.normalize_source("websearch"), "web-search")
+        self.assertEqual(db.normalize_source("LinkedIn: founders Berlin"), "linkedin-search")
+        self.assertEqual(db.normalize_source("hiring-boards"), "job-boards")
+        self.assertIsNone(db.normalize_source("my special play"))
+        bad = server.save_account("labels-a.com", name="A", source="my special play", new_lead=True)
+        self.assertFalse(bad["saved"])
+        self.assertIn("Use exactly one of", bad["error"])
+        no_reason = server.save_account("labels-b.com", name="B", source="youtube", fit_score=8, new_lead=True)
+        self.assertIn("fit_reason", no_reason["error"])
+        ok = server.save_account("labels-c.com", name="C", source="YouTube", fit_score=8, new_lead=True,
+                                 fit_reason="met: course business, India · unknown: price")
+        self.assertEqual((ok["account"]["source"], ok["account"]["fit_reason"][:4]), ("youtube", "met:"))
+
+    def test_proof_of_need_is_required_for_new_discovered_leads(self):
+        from leadsmith import db
+
+        db.upsert_account("need-a.com", name="Need A", source="launch-news", why_now="Launched in October")
+        db.add_signal("need-a.com", "launch", "Launched v2", url="https://need-a.com/blog", observed_at="2026-10-01")
+        report = db.quality_report(["need-a.com"])
+        self.assertTrue(any("proof of need" in i["issue"] for i in report["issues"] if i["level"] == "FAIL"))
+        db.add_signal("need-a.com", "need", "Hiring their first marketer", url="https://need-a.com/jobs",
+                      observed_at="2026-10-20")
+        self.assertFalse(any("proof of need" in i["issue"] for i in db.quality_report(["need-a.com"])["issues"]))
+        db.upsert_account("imported-a.com", name="Imported", source="import", why_now="x")
+        self.assertFalse(any("proof of need" in i["issue"] for i in db.quality_report(["imported-a.com"])["issues"]))
+
+    def test_rejected_candidates_are_remembered(self):
+        from leadsmith import db
+
+        self.assertTrue(db.save_rejected("tooBig.example", "Too Big Inc", "500+ employees, ICP is under 50")["saved"])
+        seen = db.known(["toobig.example", "fresh.example"])
+        self.assertTrue(seen["toobig.example"]["rejected"])
+        self.assertIn("500+ employees", seen["toobig.example"]["rejected_reason"])
+        self.assertFalse(seen["fresh.example"]["rejected"])
+        with db.connect() as conn:  # after REJECTED_DAYS it's checked again
+            conn.execute("UPDATE rejected SET created_at = '2020-01-01T00:00:00+00:00' WHERE domain = 'toobig.example'")
+        self.assertFalse(db.known(["toobig.example"])["toobig.example"]["rejected"])
+
+    def test_guessed_addresses_are_not_written_or_sent(self):
+        from leadsmith import config, db, mailer, server
+
+        contact, _ = db.upsert_contact("guessco.com", first_name="Gus", email="gus@guessco.com", email_status="guessed")
+        refused = server.save_draft(contact["id"], 1, "Hi Gus, a note about Guessco.", subject="guessco idea")
+        self.assertIn("guessed address", refused["error"])
+        with db.connect() as conn:
+            due, reason, _ = mailer._due({"contact_id": contact["id"], "step": 1, "kind": "sequence"}, conn)
+        self.assertFalse(due)
+        self.assertIn("guessed", reason)
+        config.save_env({"ALLOW_GUESSED_EMAILS": "true"})
+        try:
+            self.assertIn("draft_id", server.save_draft(contact["id"], 1, "Hi Gus, a note about Guessco.",
+                                                        subject="guessco idea"))
+        finally:
+            config.save_env({"ALLOW_GUESSED_EMAILS": "false"})
+
+    def test_results_so_far_learns_per_workspace(self):
+        from leadsmith import db, server
+
+        result = server.brain_read()["results_so_far"]
+        self.assertIn("learning", result)
+        contact, _ = db.upsert_contact("winner-co.com", first_name="Wyn", email="wyn@winner-co.com", email_status="public")
+        db.upsert_account("winner-co.com", name="Winner Co", industry="Dental clinics", source="local-listings")
+        with db.connect() as conn:
+            conn.execute("UPDATE contacts SET reply_kind = 'reply', status = 'replied' WHERE id = ?", (contact["id"],))
+        replied = {a["domain"] for a in db.results_so_far()["replied"]}
+        self.assertIn("winner-co.com", replied)
+
+    def test_linkedin_connections_export_imports(self):
+        from leadsmith import dashboard
+
+        export = ("Notes:\n\"When exporting your connection data, you may notice that some of the email addresses are "
+                  "missing.\"\n\nFirst Name,Last Name,URL,Email Address,Company,Position,Connected On\n"
+                  "Asha,Rao,https://www.linkedin.com/in/asha-rao,,Acme Dental,Owner,01 Nov 2026\n")
+        body = dashboard.csv_body(export)
+        self.assertTrue(body.startswith("First Name,Last Name,URL"))
+
+        class Req:
+            async def json(self):
+                return {"csv": export}
+
+        import asyncio
+
+        with mock.patch.object(dashboard, "body", side_effect=lambda r: {"csv": export}):
+            result = _json_body(asyncio.run(dashboard.import_csv(Req())))
+        self.assertEqual(result["accounts"], 1)
+        domain = result["domains"][0]
+        self.assertTrue(domain.startswith("acme-dental"), domain)  # the profile link isn't taken as the website
+        from leadsmith import db
+
+        contact = next(c for c in db.dossier(domain)["contacts"] if c["first_name"] == "Asha")
+        self.assertEqual(contact["linkedin_url"], "https://www.linkedin.com/in/asha-rao")
+
+
+def _json_body(response):
+    return json.loads(response.body)
+
+
+class DeckRunTests(unittest.TestCase):
+    """A deck run: done means done (even with an error exit code), no web search, and only the deck tools."""
+
+    def test_finished_work_with_error_exit_code_is_done(self):
+        import sys as _sys
+        import time as _time
+
+        from leadsmith import engines, jobs
+
+        class ExitsOne(engines.Engine):
+            def path(self):
+                return _sys.executable
+
+            def command(self, model, session=None):
+                events = [{"type": "text", "text": "All 10 decks built."}, {"type": "finish"}]
+                code = "".join(f"print({json.dumps(json.dumps(e))}, flush=True); " for e in events)
+                return [_sys.executable, "-c", code + "raise SystemExit(1)"], {}
+
+            def parse(self, event):
+                return engines.Parsed(result=event.get("text"), done=event.get("type") == "finish")
+
+        with mock.patch.dict(engines.ENGINES, {"exits1": ExitsOne("exits1", "ExitsOne", "x", "", "", "")}):
+            job_id = jobs.start("custom", {"prompt": "go"}, "exits1")["id"]
+            for _ in range(100):
+                job = jobs.get(job_id)
+                if job["status"] not in ("queued", "running"):
+                    break
+                _time.sleep(0.1)
+        self.assertEqual((job["status"], job["result"]), ("done", "All 10 decks built."))
+        self.assertIn("counted as done", job["log"])
+
+    def test_opencode_signals_the_end_of_its_last_step(self):
+        from leadsmith import engines
+
+        oc = engines.ENGINES["opencode"]
+        self.assertTrue(oc.parse({"type": "step_finish", "part": {"reason": "stop", "cost": 0}}).done)
+        self.assertFalse(oc.parse({"type": "step_finish", "part": {"reason": "tool-calls"}}).done)
+
+    def test_deck_runs_have_no_web_search(self):
+        import json as _json
+
+        from leadsmith import config, engines
+
+        claude = engines.ENGINES["claude"]
+        cmd, _ = claude.command("", scope="deck")
+        self.assertIn("WebSearch", cmd[cmd.index("--disallowedTools") + 1].split(","))
+        self.assertNotIn("WebSearch", cmd[cmd.index("--allowedTools") + 1].split(","))
+        deck_cfg = _json.loads((config.HOME / ".dashboard-mcp-deck.json").read_text(encoding="utf-8"))
+        self.assertEqual(deck_cfg["mcpServers"]["leadsmith"]["env"]["LEADSMITH_TOOL_SCOPE"], "deck")
+        normal, _ = claude.command("")
+        self.assertIn("WebSearch", normal[normal.index("--allowedTools") + 1].split(","))
+        codex, _ = engines.ENGINES["codex"].command("", scope="deck")
+        self.assertIn('web_search="disabled"', codex)
+        oc = engines.ENGINES["opencode"]
+        with mock.patch.object(type(oc), "version", lambda self: (2, 2, 5)):
+            oc.command("", scope="deck")
+            self.assertEqual(oc.workdir("deck"), config.HOME / "opencode-run-deck")  # never overwrites a normal run's
+            cfg = _json.loads((oc.workdir("deck") / "opencode.json").read_text(encoding="utf-8"))
+            self.assertEqual(cfg["permission"]["websearch"], "deny")
+            self.assertEqual(cfg["mcp"]["servers"]["leadsmith"]["environment"]["LEADSMITH_TOOL_SCOPE"], "deck")
+
+    def test_deck_runs_only_get_deck_tools(self):
+        import asyncio
+        import importlib
+
+        from leadsmith import server
+
+        server = importlib.reload(server)
+        with mock.patch.dict(os.environ, {"LEADSMITH_AGENT_RUN": "1", "LEADSMITH_TOOL_SCOPE": "deck"}):
+            server.apply_agent_mode()
+        names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        self.assertEqual(names, server.SCOPES["deck"])
+        self.assertNotIn("save_contact", names)
+        importlib.reload(server)
+
+
+class CheaperRunsTests(unittest.TestCase):
+    """Find runs stop before writing; decks go to the deck engine; a silent run is stopped."""
+
+    def test_the_search_brief_reaches_decks_emails_and_rewrites(self):
+        from leadsmith import db, jobs
+
+        brief = "Startups entering India. We offer Indian creator and influencer campaigns."
+        db.upsert_account("brief-co.com", name="Brief Co")
+        db.set_brief(["brief-co.com"], brief)
+        db.set_brief(["brief-co.com"], "a later, different search")  # an account keeps the brief it was found for
+        self.assertEqual(db.dossier("brief-co.com")["brief"], brief)
+        for kind in ("write", "deck", "ideas"):
+            _, prompt = jobs._fmt(kind, {"domains": ["brief-co.com"]})
+            self.assertIn("WHAT TO PITCH", prompt, kind)
+            self.assertIn("Indian creator and influencer campaigns", prompt, kind)
+        contact, _ = db.upsert_contact("brief-co.com", first_name="Ria", email="ria@brief-co.com", email_status="public")
+        db.upsert_draft(contact["id"], 1, "s", "Hi Ria", "email", 0, {"ok": True, "issues": []})
+        _, rewrite = jobs._fmt("rewrite", {"contact_id": contact["id"]})
+        self.assertIn("Indian creator and influencer campaigns", rewrite)
+        _, plain = jobs._fmt("write", {"domains": ["no-brief.example"]})
+        self.assertNotIn("WHAT TO PITCH", plain)
+
+    def test_a_short_search_tops_up_until_the_target(self):
+        import time as _time
+
+        from leadsmith import config, db, engines, jobs
+
+        ran, rounds = [], {"n": 0}
+
+        # Fixed timestamps far from any other test's accounts, so "found since the search started" counts only these.
+        def fake_run(job_id, kind, prompt, engine, session, model=None):
+            if kind == "find_buyers":
+                with db.connect() as conn:
+                    conn.execute("UPDATE jobs SET started_at = ? WHERE id = ?", ("3001-01-01T00:00:00+00:00", job_id))
+            if kind in ("find_buyers", "find_more"):  # each round finds 2, the user asked for 5
+                rounds["n"] += 1
+                with db.connect() as conn:
+                    for i in range(2):
+                        conn.execute("INSERT OR REPLACE INTO accounts (domain, name, created_at, updated_at) VALUES "
+                                     "(?, 'T', ?, ?)", (f"topup-{rounds['n']}-{i}.com", f"3001-01-01T00:0{rounds['n']}:0{i}+00:00",
+                                                        f"3001-01-01T00:0{rounds['n']}:0{i}+00:00"))
+            ran.append((kind, prompt))
+            jobs._finish(job_id, "done", f"round {rounds['n']}: tried YC and Wellfound", None)
+            return True
+
+        config.save_env({"EMAIL_STYLE": "idea_menu"})
+        with mock.patch.object(jobs, "_run", fake_run), \
+                mock.patch.object(type(engines.ENGINES["claude"]), "path", lambda self: "claude"), \
+                mock.patch.object(jobs, "decks_wanted", return_value=False):
+            first = jobs.start("find_buyers", {"count": 5, "focus": "fintech startups in Berlin"}, "claude")
+            for _ in range(80):
+                if ran and ran[-1][0] == "write":
+                    break
+                _time.sleep(0.05)
+        self.assertEqual([k for k, _ in ran], ["find_buyers", "find_more", "find_more", "write"])
+        second = ran[1][1]
+        self.assertIn("asked for 5", second)
+        self.assertIn("3 more NEW accounts", second)  # 2 of 5 found in round 1
+        self.assertIn("round 1: tried YC and Wellfound", second)  # it knows what was tried
+        self.assertIn("fintech startups in Berlin", second)
+        self.assertIn("topup-3-1.com", ran[-1][1])  # emails cover every round's accounts
+        self.assertIn("topup-1-0.com", ran[-1][1])
+
+    def test_top_up_is_skipped_when_the_target_is_reached(self):
+        import time as _time
+
+        from leadsmith import db, engines, jobs
+
+        ran = []
+
+        def fake_run(job_id, kind, prompt, engine, session, model=None):
+            if kind == "find_buyers":
+                with db.connect() as conn:
+                    conn.execute("UPDATE jobs SET started_at = ? WHERE id = ?", ("2999-01-01T00:00:00+00:00", job_id))
+                with db.connect() as conn:
+                    for i in range(3):
+                        conn.execute("INSERT OR REPLACE INTO accounts (domain, name, created_at, updated_at) VALUES "
+                                     "(?, 'E', '2999-01-01T00:00:01+00:00', '2999-01-01T00:00:01+00:00')", (f"enough-{i}.com",))
+            ran.append(kind)
+            jobs._finish(job_id, "done", "x", None)
+            return True
+
+        with mock.patch.object(jobs, "_run", fake_run), \
+                mock.patch.object(type(engines.ENGINES["claude"]), "path", lambda self: "claude"), \
+                mock.patch.object(jobs, "decks_wanted", return_value=False):
+            first = jobs.start("find_buyers", {"count": 3}, "claude")
+            for _ in range(80):
+                if ran and ran[-1] == "write":
+                    break
+                _time.sleep(0.05)
+        self.assertEqual(ran, ["find_buyers", "write"])
+        self.assertIn("Not needed", jobs.get(first["id"] + 1)["result"])
+
+    def test_find_then_decks_then_emails_automatically(self):
+        import time as _time
+
+        from leadsmith import config, db, engines, jobs
+
+        _, prompt = jobs._fmt("find_buyers", {"count": 5, "focus": "creators"})
+        self.assertIn("don't write ideas, emails or decks yourself", prompt)
+        ran = []
+
+        def fake_run(job_id, kind, prompt, engine, session, model=None):
+            if kind == "find_buyers":  # the search saves two new accounts
+                with db.connect() as conn:
+                    conn.execute("UPDATE jobs SET started_at = ? WHERE id = ?", (db.now(), job_id))
+                db.upsert_account("autochain-one.com", name="One")
+                db.upsert_account("autochain-two.com", name="Two")
+            ran.append((kind, engine.key, prompt))
+            jobs._finish(job_id, "done", "x", None)
+            return True
+
+        config.save_env({"EMAIL_STYLE": "personal_pitch"})
+        try:
+            with mock.patch.object(jobs, "_run", fake_run), \
+                    mock.patch.object(engines, "deck_engine", return_value=(engines.ENGINES["codex"], "", None)), \
+                    mock.patch.object(type(engines.ENGINES["claude"]), "path", lambda self: "claude"):
+                first = jobs.start("find_buyers", {"count": 2}, "claude")
+                for _ in range(60):
+                    if len(ran) == 3:
+                        break
+                    _time.sleep(0.05)
+        finally:
+            config.save_env({"EMAIL_STYLE": ""})
+        self.assertEqual([(k, e) for k, e, _ in ran], [("find_buyers", "claude"), ("deck", "codex"), ("write", "claude")])
+        for _, _, step_prompt in ran[1:]:  # decks and emails are for exactly the accounts the search saved
+            self.assertIn("autochain-one.com", step_prompt)
+            self.assertIn("autochain-two.com", step_prompt)
+        with db.connect() as conn:  # the email run in Runs shows the accounts too
+            write_job = db.one(conn.execute("SELECT prompt FROM jobs WHERE id > ? AND kind = 'write' ORDER BY id LIMIT 1",
+                                            (first["id"],)))
+        self.assertIn("autochain-one.com", write_job["prompt"])
+
+    def test_deck_slides_are_written_for_the_prospect(self):
+        from leadsmith import jobs
+
+        _, prompt = jobs._fmt("deck", {"domains": ["acme.com"]})
+        for rule in ("no URLs or links", "\"account research\"", "for the prospect"):
+            self.assertIn(rule, prompt)
+
+    def test_deck_engine_and_fallback(self):
+        from leadsmith import config, engines
+
+        opencode = engines.ENGINES["opencode"]
+        with mock.patch.object(type(opencode), "path", lambda self: "opencode" if self.key == "opencode" else "x"):
+            engine, model, note = engines.deck_engine()
+            self.assertEqual((engine.key, model, note), ("opencode", "", None))  # never a Claude model name
+        with mock.patch.object(type(opencode), "path", lambda self: None if self.key == "opencode" else "x"):
+            engine, _, note = engines.deck_engine()
+            self.assertEqual(engine.key, config.get("AGENT_ENGINE") or "claude")
+            self.assertIn("isn't installed", note)
+
+    def test_write_with_decks_runs_as_a_chain(self):
+        import time as _time
+
+        from leadsmith import config, engines, jobs
+
+        ran = []
+
+        def fake_run(job_id, kind, prompt, engine, session, model=None):
+            ran.append((kind, engine.key, session is not None))
+            failed = kind == "deck" and engine.key == "codex"  # the deck engine hits its limit
+            jobs._finish(job_id, "failed" if failed else "done", "Free usage limit reached" if failed else "x", None)
+            return not failed
+
+        config.save_env({"EMAIL_STYLE": "personal_pitch"})
+        try:
+            with mock.patch.object(jobs, "_run", fake_run), \
+                    mock.patch.object(engines, "deck_engine", return_value=(engines.ENGINES["codex"], "", "fallback note")), \
+                    mock.patch.object(type(engines.ENGINES["claude"]), "path", lambda self: "claude"):
+                first = jobs.start("write", {"domains": ["acme.com"]}, "claude", {"session_id": "s1"})
+                for _ in range(50):
+                    if len(ran) == 3:
+                        break
+                    _time.sleep(0.05)
+        finally:
+            config.save_env({"EMAIL_STYLE": ""})
+        # The deck step on the deck engine failed, so the main engine built the decks, then the emails were written.
+        self.assertEqual(ran, [("deck", "codex", False), ("deck", "claude", False), ("write", "claude", True)])
+        self.assertEqual(first["kind"], "deck")
+        write_job = jobs.get(first["id"] + 1)
+        self.assertIn("never call save_deck", write_job["prompt"])
+
+    def test_stalled_run_is_stopped(self):
+        import sys as _sys
+        import time as _time
+
+        from leadsmith import engines, jobs
+
+        class Silent(engines.Engine):
+            def path(self):
+                return _sys.executable
+
+            def command(self, model, session=None):
+                return [_sys.executable, "-c", "import time; time.sleep(600)"], {}
+
+            def parse(self, event):
+                return engines.Parsed()
+
+        with mock.patch.dict(engines.ENGINES, {"silent": Silent("silent", "Silent", "x", "", "", "")}), \
+                mock.patch.multiple(jobs, POLL_SECONDS=0.2, STALL_SECONDS=0.6):
+            job_id = jobs.start("custom", {"prompt": "go"}, "silent")["id"]
+            for _ in range(100):
+                job = jobs.get(job_id)
+                if job["status"] not in ("queued", "running"):
+                    break
+                _time.sleep(0.1)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("made no progress", job["result"])
+
+
+class LinkedInSearchSourceTests(unittest.TestCase):
+    def test_linkedin_labels_group_together_and_profiles_dedupe(self):
+        from leadsmith import db
+
+        db.upsert_account("priya-sharma.no-website", name="Priya Sharma", source="linkedin-search",
+                          linkedin_url="https://www.linkedin.com/in/priya-sharma-data/")
+        db.upsert_account("ravi-teaches.com", name="Ravi Teaches", source="linkedin: data creators Pune")
+        stats = {s["source"]: s["leads"] for s in db.source_stats()}
+        self.assertGreaterEqual(stats.get("linkedin-search", 0), 2)
+        self.assertNotIn("linkedin", stats)
+        db.upsert_account("coursecraft.io", name="CourseCraft", source="reddit: r/elearning help request")
+        db.upsert_account("lessonly.app", name="Lessonly", source="reddit-search")
+        self.assertEqual({s["source"]: s["leads"] for s in db.source_stats()}.get("reddit-search"), 2)
+        db.upsert_account("helloworld-avani.no-website", name="Avani", source="instagram: via Elev8or")
+        db.upsert_account("thenadcoder.com", name="The Nad Coder", source="ig")
+        self.assertEqual({s["source"]: s["leads"] for s in db.source_stats()}.get("instagram-search"), 2)
+        db.upsert_account("alexandbooks.com", name="Alex & Books", source="twitter: thread reader")
+        db.upsert_account("buildpublic.io", name="Build Public", source="x-search")
+        self.assertEqual({s["source"]: s["leads"] for s in db.source_stats()}.get("x-search"), 2)
+        db.upsert_account("teenskills.com", name="Teen Skills", source="hiring-boards: course video editor")
+        db.upsert_account("adscourse.co", name="Ads Course", source="hiring-boards")
+        # The old "hiring-boards" label now counts under the fixed label "job-boards".
+        self.assertEqual({s["source"]: s["leads"] for s in db.source_stats()}.get("job-boards"), 2)
+        # The same person found again under a website: caught by their profile URL.
+        for variant in ("https://linkedin.com/in/priya-sharma-data", "http://in.linkedin.com/in/Priya-Sharma-Data?trk=x"):
+            clash = db.find_duplicate("priyasharma.io", "Priya S. Academy", variant)
+            self.assertEqual((clash or {}).get("why"), "the same LinkedIn page", variant)
+        self.assertIsNone(db.find_duplicate("other.io", "Other", "https://www.linkedin.com/in/priya-sharma-dat"))
+
+
+class BatchedReplyCheckTests(unittest.TestCase):
+    """check_replies asks Gmail a fixed number of questions however many contacts there are."""
+
+    class FakeIMAP:
+        INBOX = {  # number -> (From header, raw message)
+            b"1": ("Newsletter <news@shop.com>", b"From: news@shop.com\r\n\r\nSale!"),
+            b"2": ("Asha <asha@acme.com>", b"From: asha@acme.com\r\nSubject: Re: hi\r\nMessage-ID: <r1@x>\r\n\r\nSounds good, call Tuesday?"),
+            b"3": ("Mail Delivery Subsystem <mailer-daemon@googlemail.com>",
+                   b"From: mailer-daemon@googlemail.com\r\n\r\nYour message wasn't delivered to bad@nowhere.io because the address couldn't be found."),
+            b"4": ("Raj <RAJ@Beta.com>", b"From: RAJ@Beta.com\r\nSubject: Re: hi\r\nMessage-ID: <r2@x>\r\n\r\nPlease remove me from your list."),
+        }
+
+        def __init__(self, *a, **k):
+            self.searches = 0
+
+        def login(self, *a):
+            pass
+
+        def select(self, *a, **k):
+            pass
+
+        def logout(self):
+            pass
+
+        def search(self, charset, *criteria):
+            self.searches += 1
+            if '"mailer-daemon"' in criteria:
+                return "OK", [b"3"]
+            return "OK", [b" ".join(self.INBOX)]
+
+        def fetch(self, ids, what):
+            out = []
+            for n in ids.split(b","):
+                frm, raw = self.INBOX[n]
+                if "HEADER.FIELDS (FROM)" in what:
+                    data = f"From: {frm}\r\n\r\n".encode()
+                elif "HEADER.FIELDS (SUBJECT" in what:
+                    data = raw.split(b"\r\n\r\n")[0]
+                else:
+                    data = raw
+                out += [(n + b" (BODY[] {%d}" % len(data), data), b")"]
+            return "OK", out
+
+    def test_two_searches_for_everyone(self):
+        from leadsmith import config, db, mailer
+
+        for i, email in enumerate(["asha@acme.com", "raj@beta.com", "bad@nowhere.io", "quiet@gamma.com", "a@nowhere.io"]):
+            contact, _ = db.upsert_contact(f"batch{i}.com", first_name=f"P{i}", email=email)
+            db.set_status("contact", contact["id"], "contacted")
+        fake = self.FakeIMAP()
+        config.save_env({"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x"})
+        try:
+            with mock.patch.object(mailer.imaplib, "IMAP4_SSL", return_value=fake):
+                result = mailer.check_replies(30)
+        finally:
+            config.save_env({"GMAIL_ADDRESS": "", "GMAIL_APP_PASSWORD": ""})
+        self.assertEqual(fake.searches, 2)
+        self.assertEqual([b["email"] for b in result["bounces"]], ["bad@nowhere.io"])  # not a@nowhere.io
+        kinds = {r["email"]: r["kind"] for r in result["replies"]}
+        self.assertEqual(kinds, {"asha@acme.com": "reply", "raj@beta.com": "optout"})  # sender case ignored
+        self.assertTrue(db.is_suppressed("raj@beta.com"))
+
+
+class ExtraRecipientTests(unittest.TestCase):
+    """Several addresses on one person's emails, and sending a person back to review from Outreach."""
+
+    def call(self, handler, contact_id, payload):
+        import asyncio
+
+        from leadsmith import dashboard
+
+        class Req:
+            path_params = {"id": contact_id}
+
+        with mock.patch.object(dashboard, "body", side_effect=lambda r: payload):
+            return json.loads(asyncio.run(handler(Req())).body)
+
+    def test_extra_addresses_get_the_same_email(self):
+        from leadsmith import dashboard, db, mailer
+
+        contact, _ = db.upsert_contact("multi-co.com", first_name="Ana", email="ana@multi-co.com", email_status="public")
+        draft = db.upsert_draft(contact["id"], 1, "hello", "Hi Ana, a note about Multi Co.", "email", 0, {"ok": True, "issues": []})
+        db.set_status("draft", draft["id"], "approved")
+        result = self.call(dashboard.edit_contact_recipients, contact["id"],
+                           {"emails": ["hello@multi-co.com", "ANA@multi-co.com", "hello@multi-co.com"]})
+        self.assertEqual(result["extra_emails"], ["hello@multi-co.com"])  # main address and duplicates dropped
+        self.assertEqual(result["paused"], 1)  # approved for other recipients: back to review
+        self.assertEqual(db.get_contact(contact["id"])["extra_emails"], "hello@multi-co.com")
+        msg = mailer._build({"subject": "hello", "body": "Hi Ana", "attach_deck": 0}, db.get_contact(contact["id"]), None)
+        self.assertIn("ana@multi-co.com", msg["To"])
+        self.assertIn("hello@multi-co.com", msg["To"])
+        db.suppress("hello@multi-co.com", "test")  # a do-not-contact address is never emailed
+        msg = mailer._build({"subject": "hello", "body": "Hi Ana", "attach_deck": 0}, db.get_contact(contact["id"]), None)
+        self.assertNotIn("hello@multi-co.com", msg["To"])
+        with self.assertRaises(dashboard.ApiError) as bad:
+            self.call(dashboard.edit_contact_recipients, contact["id"], {"emails": ["not-an-email"]})
+        self.assertIn("doesn't look like an email", str(bad.exception))
+
+    def test_back_to_review_from_outreach(self):
+        from leadsmith import dashboard, db
+
+        contact, _ = db.upsert_contact("back-co.com", first_name="Bo", email="bo@back-co.com", email_status="public")
+        ids = []
+        for step in (1, 2):
+            d = db.upsert_draft(contact["id"], step, "s", "Hi Bo", "email", 0, {"ok": True, "issues": []})
+            db.set_status("draft", d["id"], "approved")
+            ids.append(d["id"])
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'sent', sent_at = ? WHERE id = ?", (db.now(), ids[0]))
+        result = self.call(dashboard.contact_back_to_review, contact["id"], {})
+        self.assertEqual(result["moved"], 1)  # the sent email stays sent
+        with db.connect() as conn:
+            statuses = [r[0] for r in conn.execute("SELECT status FROM drafts WHERE contact_id = ? ORDER BY step", (contact["id"],))]
+        self.assertEqual(statuses, ["sent", "draft"])
+
+    def test_replies_and_bounces_from_extra_addresses(self):
+        from leadsmith import config, db, mailer
+
+        class Inbox(BatchedReplyCheckTests.FakeIMAP):
+            INBOX = {
+                b"1": ("Ops <ops@extra-co.com>", b"From: ops@extra-co.com\r\nSubject: Re: hi\r\nMessage-ID: <x1@y>\r\n\r\nYes, let's talk Monday."),
+                b"2": ("Mail Delivery Subsystem <mailer-daemon@googlemail.com>",
+                       b"From: mailer-daemon@googlemail.com\r\n\r\nYour message wasn't delivered to old@bounce-co.com."),
+            }
+
+            def search(self, charset, *criteria):
+                self.searches += 1
+                return ("OK", [b"2"]) if '"mailer-daemon"' in criteria else ("OK", [b" ".join(self.INBOX)])
+
+        replier, _ = db.upsert_contact("extra-co.com", first_name="Ed", email="ed@extra-co.com", email_status="public")
+        db.set_extra_emails(replier["id"], ["ops@extra-co.com"])
+        keeper, _ = db.upsert_contact("bounce-co.com", first_name="Kim", email="kim@bounce-co.com", email_status="public")
+        db.set_extra_emails(keeper["id"], ["old@bounce-co.com", "team@bounce-co.com"])
+        for c in (replier, keeper):
+            db.set_status("contact", c["id"], "contacted")
+        config.save_env({"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x"})
+        try:
+            with mock.patch.object(mailer.imaplib, "IMAP4_SSL", return_value=Inbox()):
+                result = mailer.check_replies(30)
+        finally:
+            config.save_env({"GMAIL_ADDRESS": "", "GMAIL_APP_PASSWORD": ""})
+        self.assertIn(replier["id"], {r["contact_id"] for r in result["replies"]})  # a reply from the extra address counts
+        self.assertEqual(db.get_contact(replier["id"])["status"], "replied")
+        kim = db.get_contact(keeper["id"])
+        self.assertEqual(db.extra_emails(kim), ["team@bounce-co.com"])  # only the bounced extra is dropped
+        self.assertEqual(kim["status"], "contacted")  # the person's sequence carries on
+
+
+class GlobalLocationTests(unittest.TestCase):
+    """Offline: addresses on business sites in any country, simpler geocoding queries, register name matching."""
+
+    def test_addresses_from_legal_pages_and_structured_data(self):
+        from leadsmith.providers import places
+
+        impressum = """<footer><p>© 2026 Jonas Keil. Alle Rechte vorbehalten.</p></footer>
+            <h2>Impressum</h2><p>Jonas Keil<br>Torstraße 105–107<br>10119 Berlin</p><p>Tel: +49 30 1234567</p>"""
+        self.assertEqual(places.text_addresses(impressum), ["Torstraße 105–107, 10119 Berlin"])
+        india = "<p>Address: Flat 302, Vaastu Pleasant, Sai Baba Temple Road, Bengaluru, Karnataka 560037</p>"
+        self.assertEqual(len(places.text_addresses(india)), 1)
+        jsonld = ('<script type="application/ld+json">{"@type":"Organization","address":{"@type":"PostalAddress",'
+                  '"streetAddress":"101 Rose Street South Lane","postalCode":"EH2 3JG","addressLocality":"Edinburgh",'
+                  '"addressCountry":"GB"}}</script>')
+        self.assertEqual(places.jsonld_addresses(jsonld), ["101 Rose Street South Lane, EH2 3JG, Edinburgh, GB"])
+        links = places.legal_links('<a href="/impressum">Impressum</a><a href="/blog">Blog</a>'
+                                   '<a href="https://other.com/contact">x</a><a href="/mentions-legales">Mentions</a>',
+                                   "https://jonaskeil.com/")
+        self.assertEqual(links, ["https://jonaskeil.com/impressum", "https://jonaskeil.com/mentions-legales"])
+
+    def test_simpler_geocoding_queries(self):
+        from leadsmith.providers import places
+
+        tries = places.simpler_queries("Flat 302, Vaastu Pleasant, Green Garden Layout, Bengaluru, Karnataka 560037, India")
+        self.assertIn("560037, India", tries)
+        self.assertIn("Bengaluru, Karnataka 560037, India", tries)
+
+    def test_register_names_must_really_match(self):
+        from leadsmith.providers.registries import same_name
+
+        self.assertTrue(same_name("London App Developer", "London App Developer Ltd."))
+        self.assertFalse(same_name("Trendytech", "TRENDTECH LTD"))
+
+
+class YouTubeParsingTests(unittest.TestCase):
+    """Offline: the shapes YouTube embeds in its pages, so a layout change shows up here and not mid-run."""
+
+    def setUp(self):
+        from leadsmith.providers import youtube
+        self.yt = youtube
+
+    def test_ids_and_paths(self):
+        yt = self.yt
+        self.assertEqual(yt.channel_path("@ankitbansal6"), "/@ankitbansal6")
+        self.assertEqual(yt.channel_path("https://www.youtube.com/@ankitbansal6/videos"), "/@ankitbansal6")
+        self.assertEqual(yt.channel_path("UCk7NcgnqCmui1AV7MTXZwOw"), "/channel/UCk7NcgnqCmui1AV7MTXZwOw")
+        self.assertEqual(yt.video_id("https://youtu.be/huaBtkhPGvw?t=3"), "huaBtkhPGvw")
+        self.assertEqual(yt.video_id("https://www.youtube.com/shorts/huaBtkhPGvw"), "huaBtkhPGvw")
+        with self.assertRaises(ValueError):
+            yt.video_id("https://example.com")
+        self.assertEqual(yt.count("189K subscribers"), 189000)
+        self.assertEqual(yt.count("1.01M subscribers"), 1010000)
+
+    def test_embedded_json_and_search(self):
+        data = {"contents": [{"channelRenderer": {
+            "channelId": "UCk7NcgnqCmui1AV7MTXZwOw", "title": {"simpleText": "Ankit Bansal"},
+            "subscriberCountText": {"simpleText": "@ankitbansal6"}, "videoCountText": {"simpleText": "189K subscribers"},
+            "descriptionSnippet": {"runs": [{"text": "SQL and "}, {"text": "data engineering"}]},
+            "navigationEndpoint": {"browseEndpoint": {"canonicalBaseUrl": "/@ankitbansal6"}}}}]}
+        html = f"<script>var ytInitialData = {__import__('json').dumps(data)};</script>"
+        found = self.yt.parse_search(self.yt.embedded_json(html, "ytInitialData"))
+        self.assertEqual(found[0]["handle"], "@ankitbansal6")
+        self.assertEqual(found[0]["subscribers_count"], 189000)
+        self.assertEqual(found[0]["description"], "SQL and data engineering")
+
+    def test_about_feed_and_cadence(self):
+        from datetime import datetime, timezone
+
+        about = {"x": {"aboutChannelViewModel": {
+            "description": "Business: hello@namastesql.com", "country": "India", "channelId": "UCk7NcgnqCmui1AV7MTXZwOw",
+            "subscriberCountText": "189K subscribers", "canonicalChannelUrl": "http://www.youtube.com/@ankitbansal6",
+            "links": [{"channelExternalLinkViewModel": {"title": {"content": "NamasteSQL"}, "link": {"content": "namastesql.com"}}}]}}}
+        info = self.yt.parse_about(about, '<meta property="og:title" content="Ankit Bansal">')
+        self.assertEqual((info["country"], info["name"]), ("India", "Ankit Bansal"))
+        self.assertEqual(info["emails_in_description"], ["hello@namastesql.com"])
+        self.assertEqual(info["links"], [{"title": "NamasteSQL", "url": "namastesql.com"}])
+        feed = """<feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015"
+          xmlns:media="http://search.yahoo.com/mrss/">
+          <entry><yt:videoId>huaBtkhPGvw</yt:videoId><title>AI Data Agents Full Course</title>
+            <link rel="alternate" href="https://www.youtube.com/watch?v=huaBtkhPGvw"/><published>2026-11-01T10:00:00+00:00</published>
+            <media:group><media:description>Live class</media:description><media:community><media:statistics views="1400"/></media:community></media:group></entry>
+          <entry><yt:videoId>abcdefghijk</yt:videoId><title>Tip</title>
+            <link rel="alternate" href="https://www.youtube.com/shorts/abcdefghijk"/><published>2026-06-01T10:00:00+00:00</published></entry>
+        </feed>"""
+        uploads = self.yt.parse_feed(feed)
+        self.assertEqual([u["short"] for u in uploads], [False, True])
+        self.assertEqual(uploads[0]["views"], 1400)
+        activity = self.yt.cadence(uploads, datetime(2026, 11, 4, tzinfo=timezone.utc))
+        self.assertEqual((activity["uploads_last_30_days"], activity["uploads_last_90_days"], activity["shorts_in_latest"]), (1, 1, 1))
+        self.assertEqual(activity["days_since_last_upload"], 3)
+
+    def test_storyboard_sheets_skip_the_intro(self):
+        spec = ("https://i.ytimg.com/sb/huaBtkhPGvw/storyboard3_L$L/$N.jpg?sqp=abc|48#27#100#10#10#0#default#rs$A"
+                "|160#90#679#5#5#10000#M$M#rs$B|320#180#679#3#3#10000#M$M#rs$C")
+        sheets = self.yt.storyboard_sheets(spec, 6774, 2)
+        self.assertEqual(len(sheets), 2)
+        self.assertIn("storyboard3_L2/M11.jpg", sheets[0]["url"])  # 76 sheets of 9 frames: 15% in
+        self.assertTrue(sheets[0]["url"].endswith("&sigh=rs$C"))
+        self.assertEqual(sheets[0]["covers"], "16:30-18:00")
+        self.assertEqual(self.yt.storyboard_sheets("", 100), [])
 
 
 if __name__ == "__main__":
