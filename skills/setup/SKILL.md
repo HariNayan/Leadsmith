@@ -31,5 +31,5 @@ Never invent proof points or customers. Leave a TODO if they don't know yet.
 - Point them to the dashboard (the **dashboard** skill starts it). From there:
   - **Leads → Find buyers**: run the agents.
   - **Review**: approve emails.
-  - **Settings**: connect Gmail (App Password from https://myaccount.google.com/apppasswords) and turn sending on.
+  - **Settings**: connect Gmail (App Password from https://myaccount.google.com/apppasswords). Sending is on once Gmail is connected; nothing goes out until they approve it.
 - Never ask for passwords in chat. They enter them in the dashboard's Settings page.
