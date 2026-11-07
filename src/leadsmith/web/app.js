@@ -99,7 +99,23 @@ function md(text) {
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-  for (const line of lines) {
+  const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const isRule = (row) => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(row);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // A pipe table: header row, then a |---|---| rule, then body rows.
+    if (line.includes("|") && i + 1 < lines.length && isRule(lines[i + 1])) {
+      if (inList) { html += "</ul>"; inList = false; }
+      const head = cells(line);
+      let body = "";
+      for (i += 2; i < lines.length && lines[i].includes("|") && lines[i].trim(); i++) {
+        const row = cells(lines[i]);
+        body += `<tr>${head.map((_, c) => `<td>${inline(row[c] || "")}</td>`).join("")}</tr>`;
+      }
+      i--;
+      html += `<div class="md-table"><table><thead><tr>${head.map((h) => `<th>${inline(h)}</th>`).join("")}</tr></thead><tbody>${body}</tbody></table></div>`;
+      continue;
+    }
     const m = line.match(/^\s*[-*]\s+(.*)/);
     if (m) { if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(m[1])}</li>`; continue; }
     if (inList) { html += "</ul>"; inList = false; }
@@ -677,7 +693,7 @@ PAGES.leads = async () => {
     $("#bulk").innerHTML = n ? `
       <div class="selbar"><b>${n} selected</b>
         <button class="btn sm" data-bulk="research">${icon("sparkles", "sm")}Research & write</button>
-        <button class="btn sm" data-bulk="write">${icon("mail", "sm")}Rewrite emails</button>
+        <button class="btn sm" data-bulk="write">${icon("mail", "sm")}Write emails</button>
         <button class="btn sm" data-bulk="emails">${icon("search", "sm")}Find published emails</button>
         <button class="btn sm" data-bulk="deck">${icon("file", "sm")}Build decks</button>
         <button class="btn sm danger" data-bulk="disqualify">${icon("ban", "sm")}Disqualify</button>
@@ -724,34 +740,39 @@ function suggestionBlock(sug) {
 }
 
 async function sourcesModal() {
-  const { sources } = await api("/api/sources");
+  const { sources, learning } = await api("/api/sources");
   const pct = (v) => (v === null || v === undefined ? "–" : `${Math.round(v * 100)}%`);
+  const learningNote = learning ? `<div class="callout blue" style="margin-bottom:12px">${icon("info")}<div><b>Still learning.</b> With only a few replies and verdicts so far, searches follow your business profile. Mark leads good or not a fit on the Leads page and the scout starts finding more like your best ones.</div></div>` : "";
   modal({
     title: "Where your leads come from", art: "activity", wide: true, confirm: null, cancel: "Close",
     intro: "Which sources produced leads you liked and that replied. The scout reads this and leans on what works.",
-    body: sources.length ? `<div class="table-wrap"><table class="grid">
+    body: learningNote + (sources.length ? `<div class="table-wrap"><table class="grid">
       <thead><tr><th style="padding-left:12px;width:auto;border-right:1px solid var(--border)">Source</th><th>Leads</th><th>Good / not a fit</th><th>Contacted</th><th>Replied</th><th>Reply rate</th><th>Meetings</th></tr></thead>
       <tbody>${sources.map((r) => `<tr><td style="padding-left:12px;width:auto;border-right:1px solid var(--border)"><b>${esc(r.source)}</b></td>
         <td>${r.leads}</td><td>${r.good ? `<span style="color:var(--green)">${r.good}</span>` : 0} / ${r.bad ? `<span style="color:var(--red)">${r.bad}</span>` : 0}</td>
         <td>${r.contacted}</td><td>${r.replied}</td><td>${pct(r.reply_rate)}</td><td>${r.meetings}</td></tr>`).join("")}</tbody></table></div>`
-      : `<p style="color:var(--text-2)">No leads yet.</p>`,
+      : `<p style="color:var(--text-2)">No leads yet.</p>`),
   });
 }
 
 async function findBuyersModal() {
-  const sug = await getSuggestions();
+  const [sug, brain] = await Promise.all([getSuggestions(), api("/api/brain").catch(() => ({}))]);
   const first = sug.suggestions[0]?.query || "";
+  // A vague profile gives vague leads: say which parts are still blank before the search starts.
+  const gaps = Object.entries(brain).filter(([, f]) => f && f.todos > 0).map(([name, f]) => `${name} (${f.todos})`);
+  const gapNote = gaps.length ? `<div class="callout">${icon("alert")}<div><b>Your business profile has gaps:</b> ${esc(gaps.join(", "))} still to fill in. Agents find and judge leads from it, so blanks mean vaguer leads. <a href="#/business" data-close-modal>Fill them in</a> first for better results.</div></div>` : "";
   modal({
     title: "Find buyers", art: "sparkles",
-    intro: "Agents find companies with a reason to buy now, research them, find the right people and draft emails for your review.",
+    intro: "Agents find companies with a reason to buy now, research them, find the right people, build a deck for each and draft emails for your review.",
     confirm: "Start search",
     body: `
+      ${gapNote}
       ${suggestionBlock(sug)}
       <label class="field">Who are you looking for?<span class="help">${sug.suggestions.length ? "Pick a suggestion above, edit it, or write your own." : "Leave empty to use your business profile."}</span>
         <textarea id="f-focus" rows="3" placeholder="${esc(first || "Seed to Series A fintechs in India hiring their first sales rep")}">${esc(first)}</textarea>
         <span class="enhance-row"><button type="button" class="btn sm" id="f-enhance">${icon("zap", "sm")}Enhance</button><span class="help">Turns a short request into a precise brief from your business profile. Edit it before you start.</span></span></label>
       <label class="field">Number of companies<input type="number" id="f-count" min="1" max="50" value="10" style="width:100px"></label>
-      <div class="callout blue">${icon("info")}<div>Uses company websites, job boards, Google News, the YC directory, Hacker News hiring threads and web search. Nothing is sent.</div></div>`,
+      <div class="callout blue">${icon("info")}<div>Uses free sources picked for your kind of customer: startup sites (Wellfound, BetaList, Product Hunt, F6S, YC, Hacker News), job boards, news, YouTube, LinkedIn, local listings, company registers and web search. Nothing is sent.</div></div>`,
     onConfirm: async (root) => { await startJob("find_buyers", { count: Number($("#f-count", root).value) || 10, focus: $("#f-focus", root).value }); },
   });
   wireEnhance($("#f-enhance"), $("#f-focus"), () => $("#f-count").value);
@@ -1029,6 +1050,14 @@ function renderComposer(steps) {
             <button class="btn sm ghost" data-edit-email title="Change this person's email address">${c.email ? "Edit" : "Add email"}</button></span>
           <span class="to-edit" hidden><input type="email" data-email-input value="${esc(c.email || "")}" placeholder="name@company.com" aria-label="Email address">
             <button class="btn sm primary" data-email-save>Save</button><button class="btn sm" data-email-cancel>Cancel</button></span></div>
+        ${c.email ? (() => {
+          const extras = String(c.extra_emails || "").split(",").map((x) => x.trim()).filter(Boolean);
+          return `<div class="mail-row also-row"><span class="k">Also to</span>
+            <span class="also-list">${extras.map((e) => `<span class="also-chip">${esc(e)}<button class="also-x" data-extra-remove="${esc(e)}" title="Stop sending to ${esc(e)}" aria-label="Remove ${esc(e)}">×</button></span>`).join("")}
+              <span class="also-add" ${extras.length >= 5 ? "hidden" : ""}><button class="btn sm ghost" data-extra-add title="Send this person's emails to another address too (same email, same thread)">+ Add address</button></span>
+              <span class="also-edit" hidden><input type="email" data-extra-input placeholder="another@company.com" aria-label="Another email address">
+                <button class="btn sm primary" data-extra-save>Add</button><button class="btn sm" data-extra-cancel>Cancel</button></span></span></div>`;
+        })() : ""}
         ${c.region ? `<div class="mail-row mail-note">${icon("info", "sm")}<span><b>${esc(c.region.label)}:</b> ${esc(c.region.rule)}</span></div>` : ""}
         ${c.email && c.email_status === "public" && sourceUrl(c.contact_notes) ? `<div class="mail-row mail-note">${icon("checkCircle", "sm")}<span>Published address, found on ${sourceLink(c.contact_notes)}</span></div>`
           : c.email_status === "guessed" ? `<div class="mail-row mail-note warn">${icon("alert", "sm")}<span>Guessed from the company's email pattern, so it may bounce.</span><button class="btn sm" data-find-email style="margin-left:auto">${icon("search", "sm")}Look for a published email</button>${state.overview?.bettercontact ? `<button class="btn sm" data-verify="${c.contact_id}" title="Paid: BetterContact charges only if it finds a usable email">${icon("checkCircle", "sm")}Verify (BetterContact)</button>` : ""}</div>` : ""}
@@ -1102,6 +1131,32 @@ function renderComposer(steps) {
     } catch (e) { fail(e); }
   };
   on("[data-email-save]", saveEmail);
+  // Extra recipients: same email, same thread, for every step of this person's sequence.
+  const extrasNow = () => String(c.extra_emails || "").split(",").map((x) => x.trim()).filter(Boolean);
+  const saveExtras = async (emails, done) => {
+    try {
+      const r = await api(`/api/contacts/${c.contact_id}/recipients`, { method: "PUT", body: { emails } });
+      c.extra_emails = r.extra_emails.join(",");
+      toast(`${done}${r.paused ? `. ${plural(r.paused, "approved email")} moved back to review for the new recipients.` : "."}`);
+      refreshOverview(); render();
+    } catch (e) { fail(e); }
+  };
+  on("[data-extra-add]", () => {
+    $(".also-add", el).hidden = true; $(".also-edit", el).hidden = false; $("[data-extra-input]", el).focus();
+  });
+  on("[data-extra-cancel]", () => { $(".also-edit", el).hidden = true; $(".also-add", el).hidden = false; });
+  const addExtra = () => {
+    const email = $("[data-extra-input]", el).value.trim().toLowerCase();
+    if (!email) return;
+    saveExtras([...extrasNow(), email], `Emails to ${esc(fullName(c))} also go to ${esc(email)}`);
+  };
+  on("[data-extra-save]", addExtra);
+  const extraInput = $("[data-extra-input]", el);
+  if (extraInput) extraInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addExtra(); } if (e.key === "Escape") $("[data-extra-cancel]", el).click(); };
+  $$("[data-extra-remove]", el).forEach((b) => (b.onclick = () => {
+    const email = b.dataset.extraRemove;
+    saveExtras(extrasNow().filter((x) => x !== email), `Removed ${esc(email)}`);
+  }));
   const emailInput = $("[data-email-input]", el);
   if (emailInput) emailInput.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); saveEmail(); } if (e.key === "Escape") $("[data-email-cancel]", el).click(); };
   on("[data-find-email]", async () => { try { await startJob("emails", { domains: [c.domain] }); } catch (e) { fail(e); } });
@@ -1131,7 +1186,7 @@ PAGES.outreach = async () => {
   main.innerHTML = `<div class="page">
     <div id="send-progress"></div>
     ${!mail.app_password_set ? `<div class="callout" style="margin-bottom:16px">${icon("alert")}<div>Connect Gmail in <a href="#/settings">Settings</a> to send from here, or <a href="/api/export/sequences?status=approved">download approved sequences</a> for Instantly, Smartlead or Lemlist.</div></div>`
-      : !mail.send_enabled ? `<div class="callout" style="margin-bottom:16px">${icon("alert")}<div>Sending is off. Turn it on in <a href="#/settings">Settings</a> when you're ready.</div></div>` : ""}
+      : !mail.send_enabled ? `<div class="callout" style="margin-bottom:16px">${icon("alert")}<div>Sending is turned off (<code>SEND_ENABLED=false</code> in your Leadsmith .env file).</div></div>` : ""}
     ${mail.test_recipient ? `<div class="callout blue" style="margin-bottom:16px">${icon("info")}<div><b>Test mode is on.</b> Every email and follow-up goes to ${esc(mail.test_recipient)} instead of the prospect. Clear it in <a href="#/settings">Settings</a> to go live.</div></div>` : ""}
     <div class="stats">
       <div class="card stat"><div class="label">${icon("clock", "sm")}Waiting to send</div><div class="value">${queued}</div><div class="foot">approved emails and follow-ups</div></div>
@@ -1150,7 +1205,7 @@ PAGES.outreach = async () => {
             <td><div class="seq-chips">${c.steps.map((s) => { const n = s.kind === "reply" ? "Reply" : s.step; return s.status === "sent" ? badge("sent", `${n} · Sent ${day(s.sent_at)}`) : s.due ? badge("ready", `${n} · Due ${day(s.due)}`) : badge(s.status, `${n} · ${cap(s.status)}`); }).join("")}</div></td>
             <td style="color:var(--text-2)">${c.last_sent ? ago(c.last_sent) : "–"}</td>
             <td><select data-stage="${c.id}" style="width:auto;height:28px;padding-top:0;padding-bottom:0" aria-label="Stage for ${esc(fullName(c))}">${[c.status, ...stages.filter((s) => s !== c.status)].map((s) => `<option value="${s}">${cap(s)}</option>`).join("")}</select></td>
-            <td class="act-col">${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm ghost" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Regenerate: rewrite the emails that haven't gone out yet" aria-label="Regenerate ${esc(fullName(c))}'s emails">${icon("refresh", "sm")}<span class="btn-label">Regenerate</span></button>` : ""}</td>
+            <td class="act-col">${c.steps.some((s) => s.status === "approved") ? `<button class="btn sm ghost" data-back-review="${c.id}" data-name="${esc(fullName(c))}" title="Take the emails that haven't gone out yet off the send queue and back to Review" aria-label="Send ${esc(fullName(c))}'s emails back to review">${icon("inbox", "sm")}<span class="btn-label">Back to review</span></button>` : ""}${c.steps.some((s) => s.kind !== "reply" && s.status === "approved") ? `<button class="btn sm ghost" data-regen="${c.id}" data-name="${esc(fullName(c))}" title="Regenerate: rewrite the emails that haven't gone out yet" aria-label="Regenerate ${esc(fullName(c))}'s emails">${icon("refresh", "sm")}<span class="btn-label">Regenerate</span></button>` : ""}</td>
           </tr>`).join("")}</tbody></table></div>`
         : `<div class="empty"><div class="art">${icon("send")}</div><h3>Nothing queued</h3><p>Approve emails on the Review page and they wait here until you send them.</p><a class="btn" href="#/review">${icon("inbox")}Go to Review</a></div>`}
     </div></div>`;
@@ -1159,6 +1214,15 @@ PAGES.outreach = async () => {
     try { await startJob("reply", { contact_id: Number(b.dataset.draftReply) }); b.disabled = true; b.textContent = "Drafting…"; } catch (e) { fail(e); }
   }));
   $$("[data-review-contact]").forEach((a) => (a.onclick = () => { state.reviewTab = "draft"; state.reviewContact = Number(a.dataset.reviewContact); }));
+  $$("[data-back-review]").forEach((b) => (b.onclick = async () => {
+    try {
+      const id = Number(b.dataset.backReview);
+      const r = await api(`/api/contacts/${id}/review`, { method: "POST", body: {} });
+      toast(`${plural(r.moved, "email")} for ${esc(b.dataset.name)} moved back to Review. <a href="#/review" data-review-open="${id}">Open</a>`);
+      state.reviewTab = "draft"; state.reviewContact = id;
+      refreshOverview(); render();
+    } catch (e) { fail(e); }
+  }));
   $$("[data-regen]").forEach((b) => (b.onclick = () => {
     const contact = contacts.find((x) => x.id === Number(b.dataset.regen)) || { steps: [] };
     const unsent = contact.steps.filter((s) => s.kind !== "reply" && ["approved", "draft", "rejected"].includes(s.status));
@@ -1247,7 +1311,7 @@ async function sendFlow() {
       confirm: canSend ? `Send ${plural(n, "email")}` : null, cancel: canSend ? "Cancel" : "Close",
       body: `${preview.note ? `<div class="callout blue" style="margin-bottom:12px">${icon("info")}<div>${esc(preview.note)}</div></div>` : ""}${preview.sent.map((e) => `<div class="preview"><div class="mail-row"><span class="k">To</span><span>${esc(e.to)}</span>${e.test_mode ? `<span style="color:var(--text-2);font-size:12px">instead of ${esc(e.prospect)}</span>` : ""}${badge(e.test_mode ? "manual" : "", e.test_mode ? `Test · email ${e.step}` : `Email ${e.step}`, false)}${e.days_late >= 1 ? badge("guessed", `${Math.round(e.days_late)} days late`, false) : ""}</div><div class="mail-row"><span class="k">Subject</span><b>${esc(e.subject)}</b></div>${(e.attachments || []).length ? `<div class="mail-row"><span class="k">Attached</span><span>${icon("file", "sm")} ${e.attachments.map(esc).join(", ")}</span></div>` : ""}<pre>${esc(e.preview)}</pre></div>`).join("")}
         ${preview.skipped.length ? `<div><div class="sect" style="margin-top:0">${icon("clock", "sm")}Not now</div>${preview.skipped.map((s) => `<div style="color:var(--text-2);font-size:12.5px">${esc(s.to || "#" + s.draft_id)}: ${esc(s.reason || s.error)}</div>`).join("")}</div>` : ""}
-        ${n && !mail.send_enabled ? `<div class="callout">${icon("alert")}<div>Sending is off. Turn it on in <a href="#/settings">Settings</a>, then come back.</div></div>` : ""}`,
+        ${n && !mail.send_enabled ? `<div class="callout">${icon("alert")}<div>Sending is turned off (<code>SEND_ENABLED=false</code> in your Leadsmith .env file).</div></div>` : ""}`,
       onConfirm: async () => {
         const r = await api("/api/send", { method: "POST", body: { dry_run: false, limit: 50 } });
         if (!r.started) throw new Error(r.error || "Couldn't start sending.");
@@ -1383,14 +1447,15 @@ PAGES.settings = async () => {
   main.innerHTML = `<div class="page settings">
     ${set("Agent engine", "",
       `${engineCards(s.engines, s.engine)}
-       ${modelPicker(s.engine, f.AGENT_MODEL.value)}`)}
+       ${modelPicker(s.engine, f.AGENT_MODEL.value)}
+       ${field("USE_SUBAGENTS")}`)}
     ${set("Gmail", "",
       `${field("GMAIL_ADDRESS")}${field("GMAIL_APP_PASSWORD", 'autocomplete="new-password"')}
        <div class="actions"><button class="btn sm" id="test-gmail">${icon("refresh", "sm")}Test connection</button><span id="gmail-result" style="color:var(--text-2);font-size:12.5px"></span></div>`)}
-    ${set("Sending", "", `${field("TEST_RECIPIENT", 'placeholder="you+test@gmail.com"')}${field("SEND_ENABLED")}${field("AUTO_FOLLOWUPS")}${field("DAILY_SEND_LIMIT")}${field("WARMUP")}${field("WARMUP_START")}${field("WARMUP_STEP")}${field("SEND_GAP_SECONDS")}${field("SEND_HOURS", 'placeholder="9-17"')}${field("SEND_WEEKDAYS_ONLY")}${field("PROSPECT_TIMEZONE")}`)}
+    ${set("Sending", "", `${field("TEST_RECIPIENT", 'placeholder="you+test@gmail.com"')}${field("ALLOW_GUESSED_EMAILS")}${field("AUTO_FOLLOWUPS")}${field("DAILY_SEND_LIMIT")}${field("WARMUP")}${field("WARMUP_START")}${field("WARMUP_STEP")}${field("SEND_GAP_SECONDS")}${field("SEND_HOURS", 'placeholder="9-17"')}${field("SEND_WEEKDAYS_ONLY")}${field("PROSPECT_TIMEZONE")}`)}
     ${set("Signature", "", `${field("SENDER_NAME")}${field("SENDER_SIGNATURE")}${field("POSTAL_ADDRESS")}${field("OPT_OUT_LINE")}`)}
     ${set("Verified emails", "", field("BETTERCONTACT_API_KEY", 'autocomplete="off"'))}
-    ${set("Decks", s.browser ? "" : "No Chrome or Edge found, so decks are saved as HTML.", field("DECK_COLOR"))}
+    ${set("Decks", s.browser ? "" : "No Chrome or Edge found, so decks are saved as HTML.", `${field("DECK_ENGINE", 'placeholder="opencode"')}${field("DECK_MODEL")}${field("DECK_COLOR")}`)}
     ${set("Data", "",
       `<div class="field">Export CSV<div class="actions"><a class="btn sm" href="/api/export/sequences">${icon("download", "sm")}Sequences</a><a class="btn sm" href="/api/export/contacts">${icon("download", "sm")}People</a><a class="btn sm" href="/api/export/accounts">${icon("download", "sm")}Companies</a></div></div>
        <label class="field">Do-not-contact list

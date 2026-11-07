@@ -245,7 +245,7 @@ async def put_template(request: Request) -> Response:
 
 
 async def sources(request: Request) -> Response:
-    return ok({"sources": db.source_stats()})
+    return ok({"sources": db.source_stats(), "learning": db.results_so_far(limit=3)["learning"]})
 
 
 async def account_feedback(request: Request) -> Response:
@@ -268,14 +268,33 @@ def _pick(row: dict[str, str], *names: str) -> str:
     return ""
 
 
+HEADER_WORDS = ("email", "first name", "firstname", "last name", "company", "name", "domain", "website", "title",
+                "position", "url", "linkedin")
+
+
+def csv_body(text: str) -> str:
+    """The CSV from its header row on. Exports such as LinkedIn's Connections.csv put a few "Notes:" lines above
+    the header; those would otherwise be read as the column names."""
+    lines = text.lstrip("﻿").splitlines()
+    for index, line in enumerate(lines[:15]):
+        cells = [c.strip().strip('"').lower().replace("_", " ") for c in line.split(",")]
+        if len(cells) >= 2 and sum(c in HEADER_WORDS for c in cells) >= 2:
+            return "\n".join(lines[index:])
+    return "\n".join(lines)
+
+
 async def import_csv(request: Request) -> Response:
     text = (await body(request)).get("csv") or ""
     if not text.strip():
         raise ApiError("The file is empty.")
-    reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
+    reader = csv.DictReader(io.StringIO(csv_body(text)))
     accounts, contacts, skipped = set(), 0, 0
     for raw in reader:
         row = {(k or "").strip().lower().replace("_", " "): (v or "") for k, v in raw.items()}
+        # A LinkedIn profile link (LinkedIn's export calls the column "URL") is the person's profile, not a website.
+        profile = next((v.strip() for k, v in row.items() if "linkedin.com/" in (v or "").lower()), "")
+        for key in [k for k, v in row.items() if "linkedin.com/" in (v or "").lower()]:
+            row[key] = ""
         email = _pick(row, "email", "email address", "work email", "e-mail").lower()
         domain = db.normalize_domain(_pick(row, "domain", "website", "company domain", "company website", "url",
                                            "company url", "website url"))
@@ -292,7 +311,7 @@ async def import_csv(request: Request) -> Response:
         if not domain or "." not in domain or (email and db.is_suppressed(email)) or db.known([domain])[domain]["suppressed"]:
             skipped += 1
             continue
-        db.upsert_account(domain, name=company or full or None, source="csv")
+        db.upsert_account(domain, name=company or full or None, source="import")
         accounts.add(domain)
         if full and not first:
             first, _, last = full.partition(" ")
@@ -301,9 +320,8 @@ async def import_csv(request: Request) -> Response:
                 domain, first_name=first or email.split("@")[0], last_name=last or None,
                 title=_pick(row, "title", "job title", "position", "role") or None, email=email or None,
                 email_status="imported" if email else None,
-                linkedin_url=_pick(row, "linkedin", "linkedin url", "linkedin profile", "person linkedin url",
-                                   "profile url") or None,
-                source="csv",
+                linkedin_url=profile or None,
+                source="import",
             )
             contacts += 1
     return ok({"accounts": len(accounts), "contacts": contacts, "skipped": skipped, "domains": sorted(accounts)})
@@ -541,6 +559,45 @@ async def edit_contact_email(request: Request) -> Response:
     return ok({"email": updated.get("email"), "paused": paused})
 
 
+async def edit_contact_recipients(request: Request) -> Response:
+    """Extra addresses that get this person's emails too (same email, same thread). Approved unsent emails go back
+    to review, because they were approved for different recipients."""
+    contact_id = int(request.path_params["id"])
+    raw = (await body(request)).get("emails") or []
+    emails = [str(e).strip().lower() for e in (raw if isinstance(raw, list) else str(raw).split(",")) if str(e).strip()]
+    bad = [e for e in emails if not EMAIL_RE.fullmatch(e)]
+    if bad:
+        raise ApiError(f"{bad[0]} doesn't look like an email address.")
+    blocked = [e for e in emails if db.is_suppressed(e)]
+    if blocked:
+        raise ApiError(f"{blocked[0]} is on your do-not-contact list.")
+    before = db.extra_emails(db.get_contact(contact_id))
+    try:
+        saved = db.set_extra_emails(contact_id, emails)
+    except ValueError as e:
+        raise ApiError(str(e)) from e
+    paused = 0
+    if saved != before:
+        with db.connect() as conn:
+            paused = conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'approved'",
+                                  (db.now(), contact_id)).rowcount
+        db.log_event("recipients", ", ".join(saved) or "only the main address", contact_id)
+    return ok({"extra_emails": saved, "paused": paused})
+
+
+async def contact_back_to_review(request: Request) -> Response:
+    """Outreach → Back to review: this person's approved, unsent emails return to Review (nothing is deleted)."""
+    contact_id = int(request.path_params["id"])
+    if not db.get_contact(contact_id):
+        raise ApiError("Unknown person", 404)
+    with db.connect() as conn:
+        moved = conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'approved'",
+                             (db.now(), contact_id)).rowcount
+    if moved:
+        db.log_event("back_to_review", f"{moved} approved email(s) moved back to review", contact_id)
+    return ok({"moved": moved})
+
+
 async def contact_status(request: Request) -> Response:
     status = (await body(request)).get("status")
     contact_id = int(request.path_params["id"])
@@ -676,6 +733,10 @@ async def put_settings(request: Request) -> Response:
             value = str(value).strip().lower()
             if value not in engines.ENGINES:
                 raise ApiError(f"Unknown engine {value}. Choose one of: {', '.join(engines.ENGINES)}.")
+        if key == "DECK_ENGINE":
+            value = str(value).strip().lower() or "opencode"
+            if value not in engines.ENGINES:
+                raise ApiError(f"Unknown deck engine {value}. Choose one of: {', '.join(engines.ENGINES)}.")
         if key == "AGENT_MODEL" and (data.get("AGENT_ENGINE") or engines.current().key) == "claude":
             value = config.normalize_model(str(value))
         updates[key] = str(value).strip()
@@ -806,6 +867,8 @@ def create_app(port: int = 4600):
         Route("/api/replies", _wrap(replies), methods=["POST"]),
         Route("/api/contacts/{id:int}/verify", _wrap(verify_contact), methods=["POST"]),
         Route("/api/contacts/{id:int}/email", _wrap(edit_contact_email), methods=["PUT"]),
+        Route("/api/contacts/{id:int}/recipients", _wrap(edit_contact_recipients), methods=["PUT"]),
+        Route("/api/contacts/{id:int}/review", _wrap(contact_back_to_review), methods=["POST"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
         Route("/api/enhance", _wrap(enhance), methods=["POST"]),
         Route("/api/engines", _wrap(list_engines)),
