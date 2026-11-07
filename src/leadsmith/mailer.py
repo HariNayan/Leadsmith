@@ -90,6 +90,8 @@ def _due(draft: dict[str, Any], conn) -> tuple[bool, str, dict[str, Any] | None]
         return False, "email or domain is on the suppression list", None
     if (contact.get("email_status") or "").lower() in ("invalid", "undeliverable"):
         return False, "email failed verification", None
+    if db.is_guessed(contact.get("email_status")) and not config.get_bool("ALLOW_GUESSED_EMAILS", False):
+        return False, "guessed address: find a published one (or allow guessed addresses in Settings)", None
     account = db.one(conn.execute("SELECT location, timezone FROM accounts WHERE domain = ?", (contact["domain"],)))
     zone, _ = schedule.prospect_zone(account)
     now = datetime.now(timezone.utc)
@@ -161,7 +163,9 @@ def _build(draft: dict[str, Any], contact: dict[str, Any], first: dict[str, Any]
     name = " ".join(p for p in (contact.get("first_name"), contact.get("last_name")) if p)
     msg = EmailMessage()
     msg["From"] = formataddr((config.get("SENDER_NAME", ""), sender))
-    msg["To"] = test_to or formataddr((name, contact["email"]))
+    # The person's main address plus any extra addresses (same email, same thread), minus do-not-contact ones.
+    extras = [e for e in db.extra_emails(contact) if not db.is_suppressed(e)]
+    msg["To"] = test_to or ", ".join([formataddr((name, contact["email"])), *extras])
     if first:
         subject = _subject(first["subject"] or "", bool(test_to))
         msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
@@ -175,7 +179,7 @@ def _build(draft: dict[str, Any], contact: dict[str, Any], first: dict[str, Any]
         msg["List-Unsubscribe"] = f"<mailto:{sender}?subject=unsubscribe>"
     body = draft["body"].rstrip()
     if test_to:
-        body = f"[Test mode: in live mode this goes to {name} <{contact['email']}>]\n\n{body}"
+        body = f"[Test mode: in live mode this goes to {name} <{contact['email']}>{''.join(', ' + e for e in extras)}]\n\n{body}"
     signature = _signature()
     msg.set_content(f"{body}\n\n{signature}\n" if signature else f"{body}\n")
     if lint.claims_attachment(draft["body"]) and not (draft.get("attach_deck") and decks.pdf_ready(contact["domain"])):
@@ -257,7 +261,7 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
     status = mail_status()
     live = not dry_run and status["send_enabled"]
     if not dry_run and not status["send_enabled"]:
-        return {"sent": [], "error": "Sending is off. Turn it on in Settings. Nothing was sent."}
+        return {"sent": [], "error": f"Sending is turned off (SEND_ENABLED=false in {config.ENV_FILE}). Nothing was sent."}
     if live and not (status["gmail_address"] and status["app_password_set"]):
         return {"sent": [], "error": "Connect Gmail in Settings first. Nothing was sent."}
     # Only real sends need the lock. A preview never sends or claims anything, so it must work even while a
@@ -498,13 +502,58 @@ def _reply_text(imap: imaplib.IMAP4_SSL, msg_id: bytes) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
+FETCH_CHUNK = 500  # message numbers per FETCH command, so a busy inbox never makes one huge command
+
+
+def _fetch_parts(imap: imaplib.IMAP4_SSL, ids: list[bytes], what: str) -> list[tuple[bytes, bytes]]:
+    """(message number, data) for each message, fetched in chunks. Read-only: PEEK never marks mail as read."""
+    out: list[tuple[bytes, bytes]] = []
+    for start in range(0, len(ids), FETCH_CHUNK):
+        status, parts = imap.fetch(b",".join(ids[start:start + FETCH_CHUNK]), what)
+        if status != "OK":
+            continue
+        for part in parts or []:
+            if isinstance(part, tuple) and len(part) >= 2:
+                number = re.match(rb"\s*(\d+)", part[0])
+                if number:
+                    out.append((number.group(1), part[1] or b""))
+    return out
+
+
+def _bounce_text(imap: imaplib.IMAP4_SSL, since: str) -> str:
+    """All bounce notices since the date, as one lower-case text to look addresses up in. Only the first 30 KB of
+    each: the failed address is in the notice at the top, and the rest is usually the original email with its deck."""
+    status, data = imap.search(None, "FROM", '"mailer-daemon"', "SINCE", since)
+    ids = data[0].split() if status == "OK" and data and data[0] else []
+    parts = _fetch_parts(imap, ids, "(BODY.PEEK[]<0.30000>)")
+    return "\n".join(raw.decode("utf-8", "replace") for _, raw in parts).lower()
+
+
+def _messages_by_sender(imap: imaplib.IMAP4_SSL, since: str) -> dict[str, list[bytes]]:
+    """Every inbox message since the date, grouped by sender address (oldest first), from one search plus the From
+    headers only."""
+    from email.utils import getaddresses
+
+    status, data = imap.search(None, "SINCE", since)
+    ids = data[0].split() if status == "OK" and data and data[0] else []
+    senders: dict[str, list[bytes]] = {}
+    for number, raw in _fetch_parts(imap, ids, "(BODY.PEEK[HEADER.FIELDS (FROM)])"):
+        header = raw.decode("utf-8", "replace").partition(":")[2]
+        for _, addr in getaddresses([header]):
+            if "@" in addr:
+                senders.setdefault(addr.strip().lower(), []).append(number)
+    for numbers in senders.values():
+        numbers.sort(key=int)
+    return senders
+
+
 def check_replies(days: int = 14) -> dict[str, Any]:
     address, password = config.get("GMAIL_ADDRESS"), config.get("GMAIL_APP_PASSWORD")
     if not (address and password):
         return {"error": f"Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in {config.ENV_FILE} first."}
     with db.connect() as conn:
         contacted = db.rows(conn.execute(
-            "SELECT id, email, domain, first_name, last_name, last_reply_id FROM contacts"
+            "SELECT id, email, domain, first_name, last_name, last_reply_id, extra_emails FROM contacts"
             " WHERE status IN ('contacted', 'replied') AND email IS NOT NULL"
         ))
     if not contacted:
@@ -515,9 +564,26 @@ def check_replies(days: int = 14) -> dict[str, Any]:
     try:
         imap.login(address, password.replace(" ", ""))
         imap.select("INBOX", readonly=True)
+        # Two questions to Gmail for everyone, instead of two per contact: with 100+ contacts that was 200+ searches
+        # and over a minute before every preview. Matching to contacts then happens here.
+        bounced_text = _bounce_text(imap, since)
+        by_sender = _messages_by_sender(imap, since)
+        test_to = test_recipient()
+        def bounced(address: str) -> bool:
+            # Whole address only: a bounce for "ka@site.com" is not a bounce for "a@site.com".
+            return address in bounced_text and bool(re.search(rf"(?<![\w.+-]){re.escape(address)}(?![\w-])", bounced_text))
+
         for contact in contacted:
-            status, data = imap.search(None, "FROM", '"mailer-daemon"', "BODY", f'"{contact["email"]}"', "SINCE", since)
-            if status == "OK" and data and data[0].split():
+            email_lower = contact["email"].lower()
+            extras = db.extra_emails(contact)
+            dead = [e for e in extras if bounced(e)]
+            if dead:  # an extra address bounced: stop sending to it, keep the person's sequence going
+                db.set_extra_emails(contact["id"], [e for e in extras if e not in dead])
+                for address in dead:
+                    db.log_event("bounce", f"{address} (extra address, removed)", contact["id"], contact["domain"])
+                    bounces.append({"contact_id": contact["id"], "email": address})
+                extras = [e for e in extras if e not in dead]
+            if bounced(email_lower):
                 stamp = db.now()
                 with db.connect() as conn:
                     conn.execute("UPDATE contacts SET status = 'bounced', email_status = 'invalid', updated_at = ?"
@@ -527,7 +593,6 @@ def check_replies(days: int = 14) -> dict[str, Any]:
                 db.log_event("bounce", contact["email"], contact["id"], contact["domain"])
                 bounces.append({"contact_id": contact["id"], "email": contact["email"]})
                 continue
-            test_to = test_recipient()
             if test_to:
                 # Test mode: the "prospect" is your test inbox, so match its reply by the thread's subject.
                 with db.connect() as conn:
@@ -541,11 +606,14 @@ def check_replies(days: int = 14) -> dict[str, Any]:
                     status, data = imap.search(None, "FROM", f'"{test_to}"', "SUBJECT", f'"{subject}"', "SINCE", since)
                 except imaplib.IMAP4.error:
                     continue
+                found = data[0].split() if status == "OK" and data and data[0] else []
             else:
-                status, data = imap.search(None, "FROM", f'"{contact["email"]}"', "SINCE", since)
-            if status != "OK" or not data or not data[0].split():
+                # A reply from any of the person's addresses counts (the main one or an extra one).
+                found = sorted({n for a in (email_lower, *extras) for n in by_sender.get(a, [])}, key=int)
+            if not found:
                 continue
-            latest = data[0].split()[-1]
+            latest = found[-1]
+            replier = next((a for a in (email_lower, *extras) if latest in by_sender.get(a, [])), email_lower)
             reply_subject, reply_msgid = _reply_headers(imap, latest)
             if reply_msgid and reply_msgid == contact.get("last_reply_id"):
                 continue  # nothing new since we last looked
@@ -567,9 +635,11 @@ def check_replies(days: int = 14) -> dict[str, Any]:
                              " AND status = 'contacted'", (stamp, contact["domain"]))
                 conn.execute("UPDATE drafts SET status = 'cancelled', updated_at = ? WHERE contact_id = ?"
                              " AND status IN ('draft', 'approved')", (stamp, contact["id"]))
-            db.log_event("reply", f"{len(data[0].split())} message(s) in inbox", contact["id"], contact["domain"])
+            db.log_event("reply", f"{len(found)} message(s) in inbox", contact["id"], contact["domain"])
             if reply_kind == "optout":
-                db.suppress(contact["email"], "asked to stop (reply)")
+                db.suppress(replier, "asked to stop (reply)")
+                if replier != email_lower:  # the person's emails stop too: they all went in one thread
+                    db.suppress(contact["email"], f"asked to stop (reply from {replier})")
                 db.log_event("opt_out", "asked to stop in a reply; added to do-not-contact", contact["id"], contact["domain"])
             elif reply_kind == "not_interested":
                 db.log_event("not_interested", "said not interested", contact["id"], contact["domain"])
