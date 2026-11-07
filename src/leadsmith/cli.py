@@ -38,7 +38,7 @@ async def _probe(coro) -> str:
 def _doctor() -> int:
     from . import config, decks, engines, mailer
     from .brain import read_brain
-    from .providers import emails, hn, news, website, yc
+    from .providers import emails, hn, news, places, registries, startups, website, yc, youtube
 
     config.load_env()
     config.ensure_home()
@@ -58,6 +58,12 @@ def _doctor() -> int:
         "google news": news.google_news("startup funding", 7, 1),
         "yc directory": yc.search("sales", limit=1, max_pages=1),
         "hn who's hiring": hn.who_is_hiring(["remote"], 1, 1),
+        "youtube": youtube.search_channels("sql tutorial", 1),
+        "wellfound": startups.wellfound(location="london"),
+        "betalist": startups.betalist("saas", limit=1),
+        "product hunt": startups.product_hunt(limit=1),
+        "company registers": registries.lookup(company="Monzo Bank", country="GB"),
+        "openstreetmap": places.geocode("10119 Berlin"),
         "email/MX check": emails.mx_records("gmail.com"),
     }
     for name, coro in checks.items():
