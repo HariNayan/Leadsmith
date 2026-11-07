@@ -6,22 +6,31 @@ the user's own Claude Code plan.
 """
 
 import csv
+import json
 import logging
 import re
 from datetime import datetime
 from typing import Any, Awaitable, Literal
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.utilities.types import Image
+from mcp_types import TextContent
 
 from . import compliance, config, db, lint, mailer, schedule, templates
 from .brain import read_brain, write_brain
 from . import decks
-from .providers import emails, hn, news, website, yc
+from .providers import emails, hn, news, places, registries, startups, website, yc, youtube
 from .providers.base import ProviderError
 
 INSTRUCTIONS = """Leadsmith finds buyers and drafts outreach for the user's business.
 Always call brain_read first: it holds the user's company, ICP, personas and voice.
-All data tools are free (no API keys): find_yc_companies, find_hn_hiring, search_news, scan_website, get_open_jobs, find_emails_on_page, github_profile, email_candidates. Look for a published email (find_emails_on_page, github_profile, search snippets) before guessing one with email_candidates. Combine them with your built-in WebSearch and WebFetch for anything else (lists, LinkedIn profiles via search, team pages).
+All data tools are free (no API keys): find_yc_companies, find_hn_hiring, search_news, scan_website, get_open_jobs, find_youtube_creators, youtube_channel, youtube_video_frames, find_emails_on_page, github_profile, email_candidates. WebFetch can't read YouTube (it only sees navigation text): use the youtube_* tools for creators, and youtube_video_frames to see how their videos are made.
+A detail you can't verify is not a reason to drop a lead whose fit you did verify: save it and label what's unverified. Never present it as fact.
+To prove where someone is, anywhere in the world: their own words (site, bio, interviews), find_business_address (the address on their site's legal/contact pages), LinkedIn search-result snippets (location line), company_registry_lookup, and geocode to turn any address into district and city. A registered or virtual-office address proves registration, not location. YouTube's country is country-level only. Look for a published email (find_emails_on_page, github_profile, search snippets) before guessing one with email_candidates. Combine them with your built-in WebSearch and WebFetch for anything else (lists, team pages). LinkedIn is a discovery source through Google only: WebSearch `site:linkedin.com/in` (people by role + topic + place), `/posts` (launches, hiring), `/company` and `/jobs`, and read the result snippets (name, headline, company, location). Never WebFetch linkedin.com or log in. Save those leads with source "linkedin-search".
+Reddit is a discovery source through Google only too: WebSearch `site:reddit.com/r/<community>` for people asking for what the user sells, "[Hiring]" posts and launches. Reddit is pseudonymous: a post is a lead only when it reveals a real business, and an email must never mention a pseudonymous post. Never WebFetch reddit.com. Save those leads with source "reddit-search".
+Instagram: never WebFetch instagram.com. Find Instagram creators and brands through creator directories (Collabstr, Elev8or, SocialVeins, CreatorDB) and link-in-bio pages (Linktree, Stan, Topmate, Superprofile), which you may fetch. Save those leads with source "instagram-search".
+X / Twitter: never WebFetch x.com or twitter.com (login wall). Find founders and creators through thread archives (site:threadreaderapp.com, site:typefully.com) and maker communities (Product Hunt, Indie Hackers, Gumroad); check each thread's date (older than 12 months is not a buying signal). Save those leads with source "x-search".
+The highest-intent play: people already hiring for what the user sells on freelance and job boards (site:upwork.com/freelance-jobs, onlinejobs.ph, freelancer.com, peopleperhour.com, contra.com, niche boards). Save only posts that identify the business, never reply to them, never mention an anonymous post in an email (source "hiring-boards").
 Save everything you learn (save_account, save_signal, save_contact, save_draft) so other agents and future sessions reuse it, and call check_known before researching to avoid duplicates.
 Leads whose domain ends in ".no-website" are businesses without a website (often local businesses using a Gmail address). Research them with WebSearch/WebFetch (Google Maps listings, Justdial, IndiaMART, Instagram, Facebook, LinkedIn, news) instead of scan_website, and keep any Gmail address they publish: that is their real contact email.
 Never invent facts: every claim in outreach must come from a saved signal or the brain.
@@ -67,6 +76,7 @@ def leadsmith_status() -> dict:
 def brain_read() -> dict:
     """Read the business profile: company & offer, ICP & buying signals, personas, voice rules. Call this before any prospecting or writing."""
     result: dict = {name: {"complete": f["complete"], "content": f["content"]} for name, f in read_brain().items()}
+    result["results_so_far"] = db.results_so_far()
     feedback = db.lead_feedback()
     if feedback:
         result["lead_feedback"] = {
@@ -159,6 +169,36 @@ async def find_yc_companies(
 
 
 @mcp.tool()
+async def find_startups(source: Literal["wellfound", "betalist", "producthunt"], role: str | None = None,
+                        location: str | None = None, market: str | None = None, query: str | None = None,
+                        page: int = 1, limit: int = 20) -> dict:
+    """Startups from public startup sites (free).
+    wellfound: startups by `location` (e.g. "bangalore", "london"), or startups hiring a `role` (e.g.
+      "marketing-manager", "sales-development-representative", optionally in a `location`) with their job posts as a
+      hiring signal. Each has its website, pitch, size, markets and badges. `page` for more.
+    betalist: new startups, optionally in a `market` (e.g. "saas", "fintech", "e-commerce"), with description and
+      real website.
+    producthunt: the latest launches (name, tagline, launch date, maker), optionally filtered by `query`; find the
+      website by searching the product name.
+    F6S and AltHunt's startup-directory lists are reached through web search (see the signal-scout playbook).
+
+    Args:
+        source: wellfound, betalist or producthunt
+        role: Wellfound role to find startups hiring for
+        location: Wellfound city or country
+        market: BetaList market
+        query: Product Hunt keyword filter
+        page: Wellfound results page
+        limit: max startups (BetaList, Product Hunt)
+    """
+    if source == "wellfound":
+        return await guard(startups.wellfound(role, location, max(1, page)))
+    if source == "betalist":
+        return await guard(startups.betalist(market, limit))
+    return await guard(startups.product_hunt(query, limit))
+
+
+@mcp.tool()
 async def find_hn_hiring(keywords: list[str] | None = None, months: int = 1, limit: int = 40) -> dict:
     """Companies posting in Hacker News "Who is hiring?" (free, monthly): company, roles, location, website and post text.
 
@@ -244,6 +284,106 @@ async def find_emails_on_page(url: str, first_name: str | None = None, last_name
     return await guard(emails.emails_on_page(url, first_name, last_name))
 
 
+# ── creators on YouTube (free) ──────────────────────────────────────────
+# WebFetch only sees YouTube's navigation text. These read the data YouTube embeds in its pages.
+
+@mcp.tool()
+async def find_youtube_creators(query: str, limit: int = 20, region: str | None = None) -> dict:
+    """Find YouTube creator channels for a topic (free): name, handle, subscribers and description.
+    The best discovery play when the ICP is creators, educators or coaches. Then call youtube_channel on the
+    promising ones for their country, links (course site) and posting activity.
+
+    Args:
+        query: topic in the words a creator would use, e.g. "SQL tutorial", "stock market course hindi", "excel for finance"
+        limit: max channels (up to 50)
+        region: bias results to a country, e.g. "IN" or "IN:en"
+    """
+    async def run() -> dict:
+        found = await youtube.search_channels(query, limit, region)
+        return {"channels": found, "count": len(found)}
+    return await guard(run())
+
+
+@mcp.tool()
+async def youtube_channel(channel: str) -> dict:
+    """A YouTube channel's public profile and recent uploads (free): description, COUNTRY, subscribers, total videos,
+    joined date, external links (course site, Instagram, LinkedIn), emails written in the description, the latest
+    uploads with dates and views, and posting cadence (uploads in the last 30/90 days, Shorts).
+
+    Args:
+        channel: handle ("@ankitbansal6"), channel id ("UC…") or channel URL
+    """
+    return await guard(youtube.channel(channel))
+
+
+@mcp.tool()
+async def youtube_video_frames(video: str, sheets: int = 2) -> list[TextContent | Image]:
+    """SEE a YouTube video's editing style (free): returns the video's facts plus 1-3 images, each a grid of real
+    frames from the video (YouTube's own preview storyboard). Use it to verify whether lessons are screen recordings,
+    iPad/handwritten notes, static slides, a talking head, or already animated. Cite the video URL as the evidence.
+
+    Args:
+        video: video URL or 11-character id (pick a long lesson from youtube_channel, not a Short)
+        sheets: how many frame grids to return, 1-3 (2 covers ~15% and ~60% into the video)
+    """
+    try:
+        info, images = await youtube.video_frames(video, sheets)
+    except (ProviderError, ValueError) as exc:
+        return [TextContent(type="text", text=json.dumps({"error": str(exc)}))]
+    return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False, indent=1))] + [
+        Image(data=data, format=fmt) for data, fmt in images]
+
+
+# ── where is this business? (free, worldwide) ──────────────────────────
+
+@mcp.tool()
+async def find_business_address(domain: str) -> dict:
+    """The postal address a business publishes on its own website, anywhere in the world (free): structured data
+    plus its legal and contact pages (Impressum, legal notice, mentions légales, aviso legal, note legali, contact,
+    about). Each address comes with the page it's on and where OpenStreetMap places it: neighbourhood,
+    borough/district, city, country. Use it to verify a lead's city.
+
+    Args:
+        domain: the business's website, e.g. "codeavecjonathan.com"
+    """
+    if not db.has_website(db.normalize_domain(domain)):
+        return NO_WEBSITE_HINT
+    return await guard(places.site_address(domain))
+
+
+@mcp.tool()
+async def geocode(place: str) -> dict:
+    """Where an address, postcode or place name is, anywhere in the world (free, OpenStreetMap): neighbourhood,
+    borough/district, city, region, country. Use it on an address you found (a legal page, a YouTube description, a
+    company register, a Google Maps listing) to get its city and borough, e.g. "WC2H 9JQ" -> Covent Garden, Camden,
+    London. Max one lookup per second.
+
+    Args:
+        place: an address, postcode + city, or place name
+    """
+    return await guard(places.geocode(place))
+
+
+@mcp.tool()
+async def company_registry_lookup(company: str | None = None, person: str | None = None, number: str | None = None,
+                                  country: str | None = None) -> dict:
+    """Official company registers (free): who runs a business and where it's registered.
+    UK (country "GB"): Companies House, with registered office, active directors (birth month, residence), London
+    postcode check and virtual-office flag; pass `number` from a search for the full profile. France ("FR"): the
+    national register, with head-office address and directors (sole traders too). Any other country: the global LEI
+    register (GLEIF) plus a ready-made WebSearch query for that country's register (e.g. North Data for Germany,
+    Zauba/Tofler for India, OpenCorporates elsewhere).
+    A registered address proves where the company is registered, not where the person works.
+
+    Args:
+        company: company or brand name
+        person: a director's or sole trader's name
+        number: a company number (UK) or SIREN (France)
+        country: ISO country code, e.g. "GB", "FR", "DE", "IN", "US"
+    """
+    return await guard(registries.lookup(company, person, number, country))
+
+
 @mcp.tool()
 async def github_profile(username_or_url: str) -> dict:
     """A GitHub user's public profile: email (if they made it public), website, X handle, company and bio. Free."""
@@ -269,12 +409,30 @@ def quality_check(domains: list[str]) -> dict:
 
 
 @mcp.tool()
+def save_rejected(domain: str, reason: str, name: str | None = None) -> dict:
+    """Remember a candidate you screened and found isn't a fit, for a lasting reason (wrong country, too big,
+    competitor, no paid product…), so later runs skip it (check_known shows it as `rejected` for ~4 months).
+    Don't use it for temporary problems like a site that was down.
+
+    Args:
+        domain: the candidate's domain (or <name-slug>.no-website)
+        reason: why it isn't a fit, in a few words
+        name: company or person name
+    """
+    try:
+        return db.save_rejected(domain, name, reason)
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+@mcp.tool()
 def check_known(domains: list[str], names: list[str] | None = None) -> dict:
     """Before researching, check which companies are already in the pipeline or on the do-not-contact list.
 
     Pass `names` (company names, same order as `domains`) to also catch the same company under another domain
     (a subdomain, acme.in vs acme.com) or spelling. `duplicate_of` says which saved company it matches and why.
-    Drop every candidate with in_pipeline true: the user wants NEW companies, not ones already found."""
+    Drop every candidate with in_pipeline true: the user wants NEW companies, not ones already found. Also drop
+    `rejected` ones (screened before and not a fit; `rejected_reason` says why) unless that reason no longer applies."""
     return db.known(domains, names)
 
 
@@ -289,6 +447,7 @@ def save_account(
     linkedin_url: str | None = None,
     summary: str | None = None,
     fit_score: int | None = None,
+    fit_reason: str | None = None,
     intent_score: int | None = None,
     why_now: str | None = None,
     angle: str | None = None,
@@ -307,16 +466,30 @@ def save_account(
         domain: company domain (the key)
         new_lead: pass true when you FOUND this company just now (the Signal Scout always does). Then even an exact
                   domain match is rejected. Leave false only when updating a company you already have (research).
-        fit_score: 0-10, how well they match the ICP
+        fit_score: 0-10 from a rubric of the ICP's own criteria: each met with evidence (+), missed (-), unknown (0);
+                   8+ only when most are met with evidence
+        fit_reason: one line: the ICP criteria met, missed and unknown (required with any fit_score)
         intent_score: 0-10, how strong and recent the buying signals are
         why_now: one sentence: the timely reason to reach out, citing signals
         angle: the outreach angle (pain + proof) the writer should use
         research: markdown research brief (from the account researcher)
         status: pipeline stage
-        source: where the account came from, e.g. "hn-hiring" or "yc"
+        source: where it came from, exactly one of: yc, hn-hiring, wellfound, betalist, product-hunt, f6s,
+                launch-directories, funding-news, leadership-news, launch-news, job-boards, youtube,
+                instagram-search, x-search, linkedin-search, reddit-search, local-listings, company-registers,
+                directories, lookalike, web-search, import, manual
         location: city and country of the people you'll email, e.g. "San Francisco, US"
         timezone: their IANA time zone if you know it, e.g. "America/Los_Angeles" (else guessed from location); emails only go out in their business hours
     """
+    if source:
+        label = db.normalize_source(source)
+        if not label:
+            return {"saved": False, "error": f"Unknown source {source!r}. Use exactly one of: "
+                                             f"{', '.join(db.SOURCE_LABELS)}. Nothing was saved."}
+        source = label
+    if fit_score is not None and not (fit_reason or "").strip() and new_lead:
+        return {"saved": False, "error": "Pass fit_reason with fit_score: the ICP criteria met, missed and unknown. "
+                                         "Nothing was saved."}
     clash = db.find_duplicate(domain, name, linkedin_url)
     if clash and (clash["domain"] != db.normalize_domain(domain) or new_lead):
         db.log_event("duplicate_rejected", f"{domain} is {clash['why']} as {clash['domain']}", None, clash["domain"])
@@ -327,7 +500,7 @@ def save_account(
     account, created = db.upsert_account(
         domain, name=name, industry=industry, employees=employees, location=location,
         timezone=schedule.valid_zone(timezone) or schedule.guess_timezone(location), linkedin_url=linkedin_url,
-        summary=summary, fit_score=fit_score, intent_score=intent_score, why_now=why_now, angle=angle,
+        summary=summary, fit_score=fit_score, fit_reason=fit_reason, intent_score=intent_score, why_now=why_now, angle=angle,
         research=research, status=status, source=source,
     )
     account.pop("research", None)
@@ -341,7 +514,8 @@ def save_signal(domain: str, type: str, title: str, detail: str | None = None, u
 
     Args:
         domain: company domain
-        type: hiring, funding, leadership_change, launch, expansion, tech_change, competitor, news, website, intent, other
+        type: need (evidence of one of the ICP's buying signals: every new lead needs one, with its url), hiring,
+              funding, leadership_change, launch, expansion, tech_change, competitor, news, website, intent, other
         title: short fact, e.g. "Hiring 3 SDRs"
         detail: supporting detail or quote
         url: source link
@@ -404,6 +578,10 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
     contact = db.get_contact(contact_id)
     if not contact:
         return {"error": f"No contact with id {contact_id}. Call save_contact first."}
+    if channel == "email" and db.is_guessed(contact.get("email_status")) and not config.get_bool("ALLOW_GUESSED_EMAILS", False):
+        return {"error": f"{contact.get('email')} is a guessed address, so no email is written to it (guessed addresses "
+                         "get few replies and cause bounces). Find a published address for this person and save it "
+                         "with save_contact, or skip them. The user can allow guessed addresses in Settings."}
     if attach_deck and not decks.pdf_ready(contact["domain"]):
         return {"error": "There's no PDF deck for this account to attach. Call save_deck first (and check it rendered "
                          "as a PDF), or save the email without attach_deck and without mentioning an attachment."}
@@ -460,6 +638,8 @@ def save_ideas(domain: str, ideas: list[dict]) -> dict:
 @mcp.tool()
 def save_deck(domain: str, title: str, slides: list[dict]) -> dict:
     """Create a personalised PDF deck for an account (rendered with the local Chrome/Edge). The user can attach it to an email in the dashboard.
+    The prospect reads it: facts must come from saved signals or the brain, but never print sources on the slides
+    (no URLs, no "saved"/"signal"/"research" notes, no dates of when something was found).
 
     Args:
         domain: account domain
@@ -615,9 +795,39 @@ def check_replies(days: int = 14) -> dict:
     return mailer.check_replies(days)
 
 
+AGENT_BLOCKED = ("review_drafts", "send_approved_emails")
+"""Approving and sending stay a human click: when an engine starts this server for an unattended run, these tools
+aren't offered at all (on top of each engine's own tool blocking)."""
+
+
+SCOPES = {
+    # A deck run reads what's saved and writes ideas and the deck: nothing else (no contacts, accounts or emails).
+    "deck": {"leadsmith_status", "brain_read", "get_account", "list_pipeline", "save_ideas", "save_deck",
+             "quality_check"},
+}
+
+
+def apply_agent_mode() -> None:
+    import asyncio
+    import os
+
+    remove: set[str] = set()
+    if os.environ.get("LEADSMITH_AGENT_RUN") == "1":
+        remove |= set(AGENT_BLOCKED)
+    keep = SCOPES.get(os.environ.get("LEADSMITH_TOOL_SCOPE") or "")
+    if keep is not None:
+        remove |= {t.name for t in asyncio.run(mcp.list_tools())} - keep
+    for name in remove:
+        try:
+            mcp.remove_tool(name)
+        except Exception:  # noqa: BLE001 - already removed
+            pass
+
+
 def main() -> None:
     config.load_env()
     config.ensure_home()
+    apply_agent_mode()
     mcp.run()
 
 
