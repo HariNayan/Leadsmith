@@ -58,10 +58,15 @@ def _pretty(name: str) -> str:
     return known.get(name, name.replace("-", " ").title())
 
 
-def mcp_server() -> dict[str, Any]:
-    """The Leadsmith MCP server, started from this same Python so every engine sees the dashboard's code and data."""
-    return {"command": sys.executable, "args": ["-m", "leadsmith.cli", "serve"],
-            "env": {"LEADSMITH_HOME": str(config.HOME)}}
+def mcp_server(scope: str = "") -> dict[str, Any]:
+    """The Leadsmith MCP server, started from this same Python so every engine sees the dashboard's code and data.
+    `scope` "deck" limits it to the tools a deck run needs (see server.SCOPES)."""
+    # LEADSMITH_AGENT_RUN: the server then doesn't offer the approve/send tools at all, so no engine can reach them,
+    # whatever its own tool-blocking config supports.
+    env = {"LEADSMITH_HOME": str(config.HOME), "LEADSMITH_AGENT_RUN": "1"}
+    if scope:
+        env["LEADSMITH_TOOL_SCOPE"] = scope
+    return {"command": sys.executable, "args": ["-m", "leadsmith.cli", "serve"], "env": env}
 
 
 # On Windows, never flash a console window when an engine is checked or run.
@@ -84,6 +89,8 @@ class Parsed:
     result_part: str = ""            # streamed piece of the final answer (appended)
     cost: float = 0.0                # USD to add, when the engine reports it
     error: str | None = None
+    done: bool = False               # the engine says the run is over (it should exit now)
+    final: bool = False              # a top-level answer with no tool call: the run is over if nothing follows
 
 
 @dataclass
@@ -130,13 +137,22 @@ class Engine:
         """Models for the Settings dropdown: [{"id", "label"}]. Aliases where the CLI has them, so they stay current."""
         return []
 
-    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
-        """The headless command. With `session`, it continues that conversation instead of starting a new one."""
+    def command(self, model: str, session: str | None = None, scope: str = "") -> tuple[list[str], dict[str, str]]:
+        """The headless command. With `session`, it continues that conversation instead of starting a new one.
+        `scope` "deck": only the deck tools, and no web search (a deck works from what's already saved)."""
         raise NotImplementedError
 
     def session_of(self, event: dict[str, Any]) -> str | None:
         """The session id, if this output event carries it."""
         return None
+
+    def prompt_note(self) -> str:
+        """Anything this engine's agent must know about how it reaches the Leadsmith tools."""
+        return ""
+
+    def workdir(self, scope: str = "") -> Path:
+        """The folder the engine runs in."""
+        return config.HOME
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         raise NotImplementedError
@@ -176,11 +192,21 @@ class Claude(Engine):
             info = {}
         return bool(info.get("loggedIn")), info.get("authMethod")
 
-    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
-        mcp_config = config.HOME / ".dashboard-mcp.json"
-        mcp_config.write_text(json.dumps({"mcpServers": {"leadsmith": mcp_server()}}), encoding="utf-8")
-        allowed = [f"{self.TOOL_PREFIX}*", "WebSearch", "WebFetch", "Agent", "Task", "Skill", "TodoWrite"]
-        blocked = [f"{self.TOOL_PREFIX}{name}" for name in BLOCKED_MCP] + ["Bash", "Edit", "Write", "NotebookEdit"]
+    def command(self, model: str, session: str | None = None, scope: str = "") -> tuple[list[str], dict[str, str]]:
+        # A scoped run gets its own MCP config file, so it never changes the one a normal run is using.
+        mcp_config = config.HOME / (f".dashboard-mcp-{scope}.json" if scope else ".dashboard-mcp.json")
+        mcp_config.write_text(json.dumps({"mcpServers": {"leadsmith": mcp_server(scope)}}), encoding="utf-8")
+        allowed = [f"{self.TOOL_PREFIX}*", "WebSearch", "WebFetch", "Skill", "TodoWrite"]
+        # An unattended run ends when its work does: no timers, loops or scheduled wake-ups that keep the CLI alive.
+        blocked = [f"{self.TOOL_PREFIX}{name}" for name in BLOCKED_MCP] + [
+            "Bash", "Edit", "Write", "NotebookEdit", "ScheduleWakeup", "CronCreate", "RemoteTrigger"]
+        if scope == "deck":
+            allowed.remove("WebSearch")
+            blocked.append("WebSearch")
+        if uses_subagents(self):
+            allowed += ["Agent", "Task"]
+        else:  # one agent does the whole run (the playbooks come inline in the prompt)
+            blocked += ["Agent", "Task"]
         # Agents and skills load from the plugin folder; --strict-mcp-config drops the plugin's own uv-launched server.
         cmd = [self.path() or self.binary, "-p", "--plugin-dir", str(PLUGIN_ROOT), "--mcp-config", str(mcp_config),
                "--strict-mcp-config", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
@@ -194,13 +220,16 @@ class Claude(Engine):
     def parse(self, event: dict[str, Any]) -> Parsed:
         kind = event.get("type")
         if kind == "result":
-            return Parsed(result=event.get("result"), cost=event.get("total_cost_usd") or 0.0,
+            return Parsed(result=event.get("result"), cost=event.get("total_cost_usd") or 0.0, done=True,
                           error=(event.get("result") or "Claude Code reported an error") if event.get("is_error") else None)
         if kind != "assistant":
             return Parsed()
         indent = "    " if event.get("parent_tool_use_id") else ""
         lines = []
-        for block in (event.get("message") or {}).get("content") or []:
+        blocks = (event.get("message") or {}).get("content") or []
+        texts = [b.get("text", "").strip() for b in blocks if b.get("type") == "text" and b.get("text", "").strip()]
+        final = (not indent and bool(texts) and not any(b.get("type") == "tool_use" for b in blocks))
+        for block in blocks:
             if block.get("type") == "text" and block.get("text", "").strip():
                 lines.append(f"{indent}{block['text'].strip()}")
             elif block.get("type") == "tool_use":
@@ -209,7 +238,9 @@ class Claude(Engine):
                     lines.append(f"{indent}▶ agent {args.get('subagent_type', '')}: {short(args.get('description', ''))}")
                 else:
                     lines.append(tool_line(block.get("name", ""), args, indent))
-        return Parsed(log="\n".join(lines) + "\n" if lines else "")
+        # A final answer is kept, so a run whose CLI hangs after answering still shows what it did.
+        return Parsed(log="\n".join(lines) + "\n" if lines else "", final=final,
+                      result="\n\n".join(texts) if final else None)
 
 
 class Codex(Engine):
@@ -261,8 +292,8 @@ class Codex(Engine):
         ok = bool(out) and out.returncode == 0 and "not logged in" not in text.lower()
         return ok, text.replace("Logged in using ", "") or None
 
-    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
-        server = mcp_server()
+    def command(self, model: str, session: str | None = None, scope: str = "") -> tuple[list[str], dict[str, str]]:
+        server = mcp_server(scope)
         env_toml = "{" + ", ".join(f"{k}={json.dumps(v)}" for k, v in server["env"].items()) + "}"
         # Sessions are kept (no --ephemeral) so a later run can continue them. `exec resume` has no --sandbox
         # flag, so the read-only sandbox is set as config, the same way for new and continued sessions.
@@ -274,7 +305,7 @@ class Codex(Engine):
                "-c", f"mcp_servers.leadsmith.disabled_tools={json.dumps(list(BLOCKED_MCP))}",
                "-c", 'mcp_servers.leadsmith.default_tools_approval_mode="approve"',
                "-c", "mcp_servers.leadsmith.startup_timeout_sec=60",
-               "-c", 'web_search="live"']
+               "-c", 'web_search="disabled"' if scope == "deck" else 'web_search="live"']
         return cmd + (["--model", model] if model else []) + ([session] if session else []) + ["-"], {}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
@@ -282,6 +313,8 @@ class Codex(Engine):
         if kind in ("error", "turn.failed"):
             err = event.get("message") or (event.get("error") or {}).get("message") or "Codex reported an error"
             return Parsed(error=err)
+        if kind == "turn.completed":
+            return Parsed(done=True)
         item = event.get("item") or {}
         itype = item.get("type")
         if kind == "item.started" and itype == "mcp_tool_call":
@@ -327,20 +360,61 @@ class OpenCode(Engine):
         out = _run_quiet([path, "auth", "list"])
         text = re.sub(r"\x1b\[[0-9;]*m", "", (out.stdout or "") if out else "")
         counts = [int(n) for n in re.findall(r"(\d+)\s+(?:credentials?|environment variables?)", text)]
-        return sum(counts) > 0, f"{sum(counts)} provider(s)" if counts else None
+        if not counts:
+            # Newer versions list one provider per line instead: "Cloudflare Workers AI  API key  stored".
+            counts = [len(re.findall(r"(?im)^\s*\S.*?\s{2,}(?:api key|oauth|wellknown|env)\b.*$", text))]
+        return sum(counts) > 0, f"{sum(counts)} provider(s)" if sum(counts) else None
 
-    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
-        server = mcp_server()
+    # OpenCode 2 calls its shell tool "shell", and can ask questions that would hang an unattended run. `read` stays
+    # on: denying it makes OpenCode refuse its free models ("Free usage limit reached"). Instead the run starts in
+    # an empty folder and may not read outside it (external_directory), so .env and its Gmail app password stay out
+    # of reach.
+    V2_DENY = ("edit", "write", "bash", "shell", "glob", "grep", "list", "question", "subagent", "task",
+               "experimental_image_generate", "external_directory")
+
+    def workdir(self, scope: str = "") -> Path:
+        if self.version() < (2,):
+            return config.HOME
+        folder = config.HOME / (f"opencode-run-{scope}" if scope else "opencode-run")
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder
+
+    def prompt_note(self) -> str:
+        if self.version() < (2,):
+            return ""
+        return ("How to use the Leadsmith tools here: they are in Code Mode, not direct tools. Call them inside the "
+                "`execute` tool as `await tools.leadsmith.<tool_name>({...arguments})`, e.g. "
+                "`return await tools.leadsmith.get_account({domain: \"acme.com\"})`. Every tool named in these "
+                "instructions (brain_read, get_account, save_ideas, save_deck, ...) is called that way. Only use "
+                "`execute` to call tools.leadsmith and tools you were told to use: no other code.")
+
+    def version(self) -> tuple[int, ...]:
+        out = _run_quiet([self.path() or self.binary, "--version"])
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", (out.stdout or "") if out else "")
+        return tuple(int(n) for n in match.groups()) if match else (0, 0, 0)
+
+    def command(self, model: str, session: str | None = None, scope: str = "") -> tuple[list[str], dict[str, str]]:
+        server = mcp_server(scope)
+        local = {"type": "local", "command": [server["command"], *server["args"]], "environment": server["env"]}
+        base = [self.path() or self.binary, "run", "--format", "json"]
+        tail = (["--model", model] if model else []) + (["--session", session] if session else [])
+        if self.version() >= (2,):
+            # OpenCode 2 hands runs to a background service that ignores per-run config, and reads servers from
+            # "mcp.servers". A private server (--standalone) reads opencode.json in the run's folder (the workspace).
+            cfg = {"$schema": "https://opencode.ai/config.json", "mcp": {"servers": {"leadsmith": local}},
+                   "permission": {**{name: "deny" for name in self.V2_DENY}, "webfetch": "allow",
+                                  "websearch": "deny" if scope == "deck" else "allow"}}
+            (self.workdir(scope) / "opencode.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
+            # OpenCode merges config files from parent folders too: never leave one in the workspace itself.
+            (config.HOME / "opencode.json").unlink(missing_ok=True)
+            return base[:2] + ["--standalone"] + base[2:] + tail, {}
         cfg = {
             "$schema": "https://opencode.ai/config.json",
-            "mcp": {"leadsmith": {"type": "local", "command": [server["command"], *server["args"]],
-                                  "environment": server["env"], "enabled": True}},
+            "mcp": {"leadsmith": {**local, "enabled": True}},
             "permission": {"edit": "deny", "bash": "deny", "webfetch": "allow"},
             "tools": {f"leadsmith_{name}": False for name in BLOCKED_MCP},
         }
-        cmd = [self.path() or self.binary, "run", "--format", "json"] + (["--model", model] if model else []) \
-            + (["--session", session] if session else [])
-        return cmd, {"OPENCODE_CONFIG_CONTENT": json.dumps(cfg)}
+        return base + tail, {"OPENCODE_CONFIG_CONTENT": json.dumps(cfg)}
 
     def parse(self, event: dict[str, Any]) -> Parsed:
         kind = event.get("type")
@@ -355,7 +429,8 @@ class OpenCode(Engine):
             text = part["text"].strip()
             return Parsed(log=text + "\n", result=text)
         if kind == "step_finish":
-            return Parsed(cost=float(part.get("cost") or 0))
+            # reason "stop" ends the last step (others end with "tool-calls"): the run is over.
+            return Parsed(cost=float(part.get("cost") or 0), done=part.get("reason") == "stop")
         if kind == "error":
             err = event.get("error") or {}
             return Parsed(error=(err.get("data") or {}).get("message") or err.get("message") or str(err) or "OpenCode reported an error")
@@ -396,13 +471,14 @@ class Gemini(Engine):
             selected = {}
         return bool(selected.get("selectedType")), selected.get("selectedType")
 
-    def command(self, model: str, session: str | None = None) -> tuple[list[str], dict[str, str]]:
+    def command(self, model: str, session: str | None = None, scope: str = "") -> tuple[list[str], dict[str, str]]:
         # Project settings in the workspace: the Leadsmith server, the blocked tools, and no shell or file edits.
         settings_dir = config.HOME / ".gemini"
         settings_dir.mkdir(parents=True, exist_ok=True)
+        exclude = ["run_shell_command", "write_file", "replace"] + (["google_web_search"] if scope == "deck" else [])
         (settings_dir / "settings.json").write_text(json.dumps({
-            "mcpServers": {"leadsmith": {**mcp_server(), "excludeTools": list(BLOCKED_MCP), "timeout": 120000}},
-            "tools": {"exclude": ["run_shell_command", "write_file", "replace"]},
+            "mcpServers": {"leadsmith": {**mcp_server(scope), "excludeTools": list(BLOCKED_MCP), "timeout": 120000}},
+            "tools": {"exclude": exclude},
         }, indent=2), encoding="utf-8")
         cmd = [self.path() or self.binary, "-o", "stream-json", "--approval-mode", "yolo", "--skip-trust",
                "--allowed-mcp-server-names", "leadsmith"]
@@ -416,8 +492,9 @@ class Gemini(Engine):
             return Parsed(log=f"  ✗ {short(event.get('output') or event.get('error') or '')}\n")
         if kind == "message" and event.get("role") == "assistant":
             return Parsed(log=event.get("content") or "", result_part=event.get("content") or "")
-        if kind == "result" and event.get("status") not in (None, "success"):
-            return Parsed(error=short(event.get("error") or event, 300))
+        if kind == "result":
+            failed = event.get("status") not in (None, "success")
+            return Parsed(done=True, error=short(event.get("error") or event, 300) if failed else None)
         return Parsed()
 
 
@@ -447,6 +524,32 @@ def current_model() -> str:
     if not model and current().key == "claude":
         model = (config.get("CLAUDE_MODEL") or "").strip()
     return model
+
+
+def model_for(engine: Engine) -> str:
+    """The model setting only applies to the engine it was chosen for: a run on another engine uses that engine's
+    default (a Claude model name means nothing to OpenCode)."""
+    return current_model() if engine.key == current().key else ""
+
+
+def uses_subagents(engine: Engine) -> bool:
+    """Sub-agents are off by default: one agent doing the whole run reads the profile and instructions once and was
+    many times cheaper and faster in practice, with the same quality checks."""
+    return engine.subagents and config.get_bool("USE_SUBAGENTS", False)
+
+
+def deck_engine() -> tuple[Engine, str, str | None]:
+    """(engine, model, note) for building decks: DECK_ENGINE (OpenCode by default), or the main engine when that
+    isn't installed. `note` says why the fallback happened."""
+    wanted = (config.get("DECK_ENGINE") or "opencode").strip().lower()
+    engine = ENGINES.get(wanted)
+    if engine and engine.path():
+        model = (config.get("DECK_MODEL") or "").strip()
+        return engine, model if engine.key != current().key else (model or current_model()), None
+    main = current()
+    label = engine.label if engine else wanted
+    return main, current_model(), f"{label} isn't installed, so {main.label} built the decks. Install it: " + (
+        engine.install if engine else "choose opencode, claude, codex or gemini in Settings.")
 
 
 def all_status() -> list[dict[str, Any]]:
