@@ -6,6 +6,7 @@ import html
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -87,7 +88,58 @@ footer {{ position: absolute; left: 1in; right: 1in; bottom: .45in; display: fle
 </style></head><body>{''.join(pages)}</body></html>"""
 
 
+SLIDE_FORMAT = ('Each slide is {"heading": str, "body": str (1-2 sentences), "bullets": [str] (up to 4), '
+                '"highlight": str (optional big stat or quote), "kicker": str (optional small label)}; 3 to 6 slides, '
+                'every slide with a heading and a body or bullets.')
+
+# Field names agents guess when they can't see the tool's schema (OpenCode's code mode hides it).
+_HEADING_KEYS = ("heading", "title", "headline", "h1", "header")
+_BODY_KEYS = ("body", "text", "description", "subtitle", "subheading", "paragraph", "summary")
+_BULLET_KEYS = ("bullets", "points", "items", "list", "bullet_points", "content")
+_PLACEHOLDER = re.compile(r"^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$|^(lorem ipsum|todo|tbd|placeholder|xxx+)\b", re.I)
+
+
+def normalize_slides(slides: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Slides in the renderer's format, or an error saying exactly what's wrong. A deck is shown to a prospect, so a
+    slide without a heading or any text, or with placeholder text, is refused rather than rendered blank."""
+    if not isinstance(slides, list) or not slides:
+        return [], f"slides must be a list. {SLIDE_FORMAT}"
+    if not 3 <= len(slides) <= 6:
+        return [], f"A deck has 3 to 6 slides (got {len(slides)}). {SLIDE_FORMAT}"
+    out = []
+    for n, raw in enumerate(slides, start=1):
+        if not isinstance(raw, dict):
+            return [], f"Slide {n} isn't an object. {SLIDE_FORMAT}"
+        pick = lambda keys: next((raw[k] for k in keys if raw.get(k)), None)  # noqa: E731
+        heading, body, bullets = pick(_HEADING_KEYS), pick(_BODY_KEYS), pick(_BULLET_KEYS)
+        if isinstance(body, list):  # a list of lines is bullets
+            bullets, body = bullets or body, None
+        if isinstance(bullets, str):
+            bullets = [b.strip(" -•*") for b in bullets.splitlines() if b.strip(" -•*")]
+        if isinstance(bullets, list) and not body and bullets and not raw.get("bullets"):
+            body, bullets = str(bullets[0]), bullets[1:]  # "content": [...] → first line as the body
+        slide = {"heading": str(heading or "").strip(), "body": str(body or "").strip(),
+                 "bullets": [str(b).strip() for b in (bullets or []) if str(b).strip()][:4],
+                 "highlight": str(raw.get("highlight") or "").strip(), "kicker": str(raw.get("kicker") or "").strip()}
+        if not slide["heading"]:
+            return [], f"Slide {n} has no heading. {SLIDE_FORMAT}"
+        if not slide["body"] and not slide["bullets"]:
+            return [], f"Slide {n} has no body or bullets. {SLIDE_FORMAT}"
+        texts = [slide["heading"], slide["body"], slide["highlight"], *slide["bullets"]]
+        fake = next((t for t in texts if t and _PLACEHOLDER.search(t.strip())), None)
+        if fake:
+            return [], (f"Slide {n} has placeholder text ({fake!r}). Write the real content: decks go to prospects, "
+                        "so never save a test deck.")
+        out.append({k: v for k, v in slide.items() if v})
+    return out, None
+
+
 def build(domain: str, title: str, slides: list[dict[str, Any]]) -> dict[str, Any]:
+    slides, problem = normalize_slides(slides)
+    if problem:
+        return {"error": problem, "saved": False}
+    if not (title or "").strip() or _PLACEHOLDER.search(title.strip()):
+        return {"error": "Give the deck a real title, e.g. \"<Company> × <your company>: <the idea>\".", "saved": False}
     domain = db.normalize_domain(domain)
     account = db.dossier(domain) or {}
     company = account.get("name") or domain

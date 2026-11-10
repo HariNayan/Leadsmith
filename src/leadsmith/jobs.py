@@ -151,9 +151,16 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "signals, ideas, contacts, and `deck`). Skip an account whose `deck` already has a `pdf_path`, unless the "
         "user asked to rebuild.\n{deck_slides}{brief_line}\n"
         "Use only facts from the account's saved signals and research and proof written in company.md: no invented "
-        "numbers, clients or results. Name the company and its real product or work. {deck_voice} Call "
-        "save_deck(domain, title, slides) once per account and check it returned a `pdf`. Don't write or change any "
-        "emails.{extra}",
+        "numbers, clients or results. Name the company and its real product or work. {deck_voice}\n"
+        "Call save_deck exactly like this, once per account, with the finished content:\n"
+        "save_deck({{domain: \"acme.com\", title: \"Acme × <your company>: <the idea in a few words>\", slides: [\n"
+        "  {{heading: \"<one line>\", body: \"<1-2 sentences>\", bullets: [\"<point>\", \"<point>\"], "
+        "highlight: \"<optional big stat or quote>\", kicker: \"<optional small label>\"}},\n"
+        "  ... 4 slides in all ...]}})\n"
+        "Every slide needs a heading and a body or bullets; the field names must be exactly these. Never save a test or "
+        "placeholder deck to find out the format: it's given above, and it overwrites the prospect's real deck. If "
+        "save_deck returns an `error`, fix what it says and save again. Check it returned a `pdf`. Don't write or "
+        "change any emails, and don't read or open other files.{extra}",
     ),
     "autofill": (
         "Fill business profile from {website}",

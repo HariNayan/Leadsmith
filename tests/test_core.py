@@ -1629,6 +1629,38 @@ def _json_body(response):
     return json.loads(response.body)
 
 
+class DeckFormatTests(unittest.TestCase):
+    """Decks go to prospects: guessed field names are mapped, and blank or placeholder slides are refused."""
+
+    def test_guessed_field_names_are_mapped(self):
+        from leadsmith import decks
+
+        slides, problem = decks.normalize_slides([
+            {"title": "Your moment", "content": ["India is your second market.", "You launched in April.", "Hiring 30"]},
+            {"headline": "What we'd make", "text": "A creator series.", "points": ["6 creators", "Reels and Shorts"]},
+            {"heading": "The plan", "body": "Storyboard first.", "highlight": "6 weeks"},
+            {"h1": "Next step", "description": "A 15-minute call."},
+        ])
+        self.assertIsNone(problem)
+        self.assertEqual(slides[0], {"heading": "Your moment", "body": "India is your second market.",
+                                     "bullets": ["You launched in April.", "Hiring 30"]})
+        self.assertEqual(slides[1]["bullets"], ["6 creators", "Reels and Shorts"])
+        self.assertEqual(slides[3]["heading"], "Next step")
+
+    def test_blank_and_placeholder_decks_are_refused(self):
+        from leadsmith import decks
+
+        _, problem = decks.normalize_slides([{"kicker": "x"}] * 4)
+        self.assertIn("no heading", problem)
+        _, problem = decks.normalize_slides([{"heading": "HEADING_A", "body": "BODY_A"}] * 4)
+        self.assertIn("placeholder", problem)
+        _, problem = decks.normalize_slides([{"heading": "Only one", "body": "x"}])
+        self.assertIn("3 to 6 slides", problem)
+        result = decks.build("probe.example", "TITLE_B", [{"heading": "A", "body": "B"}] * 4)
+        self.assertFalse(result["saved"])
+        self.assertIsNone(decks.get("probe.example"))  # nothing was overwritten
+
+
 class DeckRunTests(unittest.TestCase):
     """A deck run: done means done (even with an error exit code), no web search, and only the deck tools."""
 

@@ -402,7 +402,9 @@ class OpenCode(Engine):
             # OpenCode 2 hands runs to a background service that ignores per-run config, and reads servers from
             # "mcp.servers". A private server (--standalone) reads opencode.json in the run's folder (the workspace).
             cfg = {"$schema": "https://opencode.ai/config.json", "mcp": {"servers": {"leadsmith": local}},
-                   "permission": {**{name: "deny" for name in self.V2_DENY}, "webfetch": "allow",
+                   "permission": {**{name: "deny" for name in self.V2_DENY},
+                                  # a deck run works only from saved data: no web pages, so nothing on the web can steer it
+                                  "webfetch": "deny" if scope == "deck" else "allow",
                                   "websearch": "deny" if scope == "deck" else "allow"}}
             (self.workdir(scope) / "opencode.json").write_text(json.dumps(cfg, indent=1), encoding="utf-8")
             # OpenCode merges config files from parent folders too: never leave one in the workspace itself.
