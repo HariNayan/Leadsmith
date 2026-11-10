@@ -559,3 +559,8 @@ table.seq-table td:nth-child(4) { width: 1%; }
 /* prompt enhancer */
 .enhance-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 .enhance-row .help { flex: 1 1 220px; }
+
+/* Agent runs: View prompt */
+.prompt-box { white-space: pre-wrap; word-break: break-word; max-height: 46vh; overflow: auto; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--subtle); font-size: 12.5px; line-height: 1.55; color: var(--text); }
+.prompt-box.brief { max-height: 30vh; border-color: var(--primary); background: var(--bg); font-size: 13px; }

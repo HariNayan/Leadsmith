@@ -1403,6 +1403,26 @@ async function rerunJob(j, pickAnother) {
   } catch (e) { fail(e); }
 }
 
+// The exact task a run was given. The brief the user typed is shown first: it's what to check when a run
+// searches for the wrong thing.
+function viewPrompt(j) {
+  const prompt = j.prompt || "";
+  const brief = prompt.includes("Focus from the user:")
+    ? prompt.split("Focus from the user:")[1].split("\nAlready in my pipeline")[0].trim() : "";
+  modal({
+    title: "Prompt given to the agent", art: "file", wide: true, confirm: "Copy prompt", cancel: "Close",
+    intro: `${esc(j.title)}${j.created_at ? ` · ${esc(ago(j.created_at))}` : ""}`,
+    body: `${brief ? `<div class="sect" style="margin-top:0">${icon("user", "sm")}Your brief</div><div class="prompt-box brief">${esc(brief)}</div>` : ""}
+      <div class="sect"${brief ? "" : ' style="margin-top:0"'}>${icon("file", "sm")}${brief ? "Full task" : "Task"}</div>
+      <div class="prompt-box">${esc(prompt)}</div>
+      <p class="help" style="margin-top:10px">Leadsmith also gives every run its standard rules and agent playbooks; this is the task itself.</p>`,
+    onConfirm: async () => {
+      try { await navigator.clipboard.writeText(prompt); toast("Prompt copied"); } catch { toast("Couldn't copy: select the text instead", "error"); }
+      return true;
+    },
+  });
+}
+
 async function loadJob(id) {
   const el = $("#job-detail");
   if (!el || state.page !== "activity" || state.activeJob !== id) return;
@@ -1413,14 +1433,14 @@ async function loadJob(id) {
     const atBottom = !old || old.scrollHeight - old.scrollTop - old.clientHeight < 40;
     el.innerHTML = `
       <div class="comp-head"><div><h2>${esc(j.title)}</h2><div class="meta">${running ? `<span class="spin" style="color:var(--primary)"></span>Running` : badge(j.status)}<span>${j.started_at ? `Started ${ago(j.started_at)}` : "Waiting to start"}${j.finished_at ? ` · finished ${ago(j.finished_at)}` : ""}${j.cost_usd ? ` · $${Number(j.cost_usd).toFixed(2)} of usage` : ""}${j.engine ? ` · ${esc(ENGINE_LABELS[j.engine] || j.engine)}` : ""}</span></div></div>
-        <div class="actions">${running ? `<button class="btn sm danger" data-cancel>${icon("stop", "sm")}Stop</button>`
+        <div class="actions"><button class="btn sm" data-view-prompt title="See exactly what this agent was asked to do">${icon("file", "sm")}View prompt</button>${running ? `<button class="btn sm danger" data-cancel>${icon("stop", "sm")}Stop</button>`
           : ["failed", "cancelled"].includes(j.status) ? `<button class="btn sm" data-rerun-same>${icon("refresh", "sm")}Run again</button><button class="btn sm primary" data-rerun-other>${icon("zap", "sm")}Run with another agent</button>` : ""}</div></div>
       ${j.result ? `<div class="${j.status === "failed" ? "callout red" : "context"}" style="margin:16px 0">${icon(j.status === "failed" ? "alert" : "sparkles")}<div>${md(j.result)}${limitHit(j) ? `<div class="rerun-hint">${esc(ENGINE_LABELS[j.engine] || "This agent")} has hit its limit. Finish this task with another agent: <button class="btn sm primary" data-rerun-other>${icon("zap", "sm")}Run with another agent</button></div>` : ""}</div></div>` : '<div style="height:16px"></div>'}
       <div class="sect">${icon("activity", "sm")}Steps</div>
-      <div class="log">${esc(stepsOnly(j) || (running ? `Starting ${ENGINE_LABELS[j.engine] || "the agent"}…` : "No output."))}</div>
-      <details style="margin-top:14px"><summary style="color:var(--text-2);cursor:pointer">Instructions sent to the agent</summary><div class="log" style="margin-top:8px">${esc(j.prompt)}</div></details>`;
+      <div class="log">${esc(stepsOnly(j) || (running ? `Starting ${ENGINE_LABELS[j.engine] || "the agent"}…` : "No output."))}</div>`;
     const log = $(".log", el);
     if (atBottom) log.scrollTop = log.scrollHeight;
+    $("[data-view-prompt]", el).onclick = () => viewPrompt(j);
     $$("[data-rerun-same]", el).forEach((b) => (b.onclick = () => rerunJob(j, false)));
     $$("[data-rerun-other]", el).forEach((b) => (b.onclick = () => rerunJob(j, true)));
     const cancel = $("[data-cancel]", el);
