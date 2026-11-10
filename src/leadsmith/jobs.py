@@ -125,6 +125,20 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "keep any picked idea), then rewrite the unsent drafts around them in the email style brain_read gives "
         "(email_style), following the outreach-writer agent. Don't touch sent emails.{deck_note}{brief_line}{extra}",
     ),
+    # New ideas with a suggestion from the user: improve what's there with it, both the ideas and the emails.
+    "ideas_enhance": (
+        "Improve ideas: {domains_short}",
+        "For these accounts ({domains}): the user wants the ideas AND the emails improved with this suggestion:\n"
+        "---\n{suggestion}\n---\n"
+        "First read get_account for each (current ideas, unsent drafts, research, signals). Then:\n"
+        "1) Ideas: rework the current ideas so each one reflects the suggestion, and save 3 with save_ideas. Keep what "
+        "was already strong and specific to them; replace an idea only when the suggestion can't fit it. Keep any "
+        "picked idea. Every idea still answers a saved signal: don't invent facts to fit the suggestion.\n"
+        "2) Emails: rewrite every unsent draft so it uses the improved ideas and follows the suggestion, in the email "
+        "style brain_read gives (email_style), following the outreach-writer agent. Don't touch sent emails.\n"
+        "If the suggestion conflicts with a rule in voice.md or the playbook (length, no fake claims), follow the "
+        "suggestion as far as the rule allows and say what you couldn't do in your summary.{deck_note}{brief_line}",
+    ),
     "reply": (
         "Draft reply to {person}",
         "{person} at {company} replied (contact id {contact_id}). Their latest message:\n---\n{reply_text}\n---\n"
@@ -271,6 +285,10 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
     }
     if kind in ("research", "write", "deck", "emails", "ideas") and not domains:
         raise ValueError("Pick at least one company.")
+    if kind == "ideas" and (params.get("extra") or "").strip():
+        values["suggestion"] = params["extra"].strip()[:1500]
+        title_t, prompt_t = PROMPTS["ideas_enhance"]
+        return title_t.format(**values), prompt_t.format(**values)
     if kind == "reply":
         contact = db.get_contact(int(params.get("contact_id") or 0))
         if not contact or not contact.get("last_reply"):

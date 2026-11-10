@@ -2228,5 +2228,21 @@ class YouTubeParsingTests(unittest.TestCase):
         self.assertEqual(self.yt.storyboard_sheets("", 100), [])
 
 
+class IdeasSuggestionTests(unittest.TestCase):
+    def test_suggestion_improves_ideas_and_emails(self):
+        from leadsmith import jobs
+        title, prompt = jobs._fmt("ideas", {"domains": ["acme.com"], "extra": "focus on their hiring push"})
+        self.assertTrue(title.startswith("Improve ideas"))
+        self.assertIn("focus on their hiring push", prompt)
+        self.assertIn("save_ideas", prompt)
+        self.assertIn("unsent draft", prompt)
+
+    def test_no_suggestion_writes_fresh_ideas(self):
+        from leadsmith import jobs
+        title, prompt = jobs._fmt("ideas", {"domains": ["acme.com"], "extra": "  "})
+        self.assertTrue(title.startswith("New ideas"))
+        self.assertIn("fresh ideas", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

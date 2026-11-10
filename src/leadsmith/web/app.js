@@ -1113,7 +1113,20 @@ function renderComposer(steps) {
   on("[data-copy]", () => { navigator.clipboard.writeText(ta.value); toast("Copied"); });
   on("[data-test]", async () => { try { await save(); const r = await api(`/api/drafts/${s.id}/test`, { method: "POST", body: {} }); toast(`Test sent to ${esc(r.sent_to)}`); } catch (e) { fail(e); } });
   on("[data-open]", () => openAccount(c.domain));
-  on("[data-new-ideas]", async () => { try { await startJob("ideas", { domains: [c.domain] }); } catch (e) { fail(e); } });
+  on("[data-new-ideas]", () => {
+    const company = c.company || c.domain;
+    const had = ((state.reviewIdeas || {})[c.domain] || []).length;
+    modal({
+      title: `${had ? "New" : "Write"} ideas for ${company}`, art: "sparkles", confirm: had ? "Get new ideas" : "Write ideas",
+      intro: `The agent writes 3 ${had ? "fresh " : ""}ideas for ${esc(company)} and rewrites the emails that haven't gone out yet around them. Sent emails stay as they are.`,
+      body: `<label class="field">Any suggestions? <span class="help">Optional. With a suggestion, the agent improves the current ideas and emails with it instead of starting over. For example: focus on their hiring push, one idea about onboarding videos, keep them cheaper to try.</span>
+          <textarea id="ideas-extra" rows="3" placeholder="Leave empty and the agent picks"></textarea></label>`,
+      onConfirm: async (root) => {
+        const extra = $("#ideas-extra", root).value.trim();
+        await startJob("ideas", { domains: [c.domain], extra });
+      },
+    });
+  });
   on("[data-edit-email]", () => {
     $(".to-view", el).style.display = "none"; $(".to-edit", el).hidden = false;
     const input = $("[data-email-input]", el); input.focus(); input.select();
