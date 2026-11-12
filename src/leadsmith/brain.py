@@ -96,26 +96,30 @@ def offer_for(text: str | None = None) -> dict[str, object]:
 
 FILE_LABELS = {"company": "Company & offer", "icp": "Ideal customer", "personas": "Personas", "voice": "Voice & rules"}
 
-# Asked every time, in this order. Written for any business: no industry in them.
+# The only questions asked, in this order. Between them they cover every TODO in the profile templates, and the
+# agent fills each open TODO the answers cover. Written for any business: no industry in them.
 CORE_QUESTIONS = [
-    {"id": "lead_offer", "question": "What do you want to sell in your outreach right now?",
-     "help": "If you offer several things, say which one leads. Every email pitches this first.",
-     "placeholder": "e.g. Our main offer is X for Y. Z is an add-on we only mention if it fits."},
-    {"id": "offers", "question": "For each thing you sell: what does the client get, what changes for their customers, "
-                                 "how long does it take, and what's the smallest first project?",
-     "help": "One paragraph per offer. Rough is fine.",
-     "placeholder": "e.g. X: they get ..., so their customers ... Takes 2 weeks. Smallest first project: ..."},
-    {"id": "proof", "question": "Which past clients, results or work can emails mention?",
-     "help": "Names, numbers, links. Emails quote these exactly and never invent others, so anything you leave out "
-             "is never mentioned. Say which offer each one proves.",
+    {"id": "offers", "question": "What do you sell?",
+     "help": "Each offer: what the client gets, what changes for their customers, how long it takes, the smallest "
+             "first project and the rough price. Put the one emails should pitch first at the top.",
+     "placeholder": "e.g. 1) X (lead offer): they get ..., so their customers ... 2 weeks, from $2k. Smallest first "
+                    "project: ...\n2) Y: ..."},
+    {"id": "proof", "question": "What can emails say you've done?",
+     "help": "Past clients, results in numbers, links, and which offer each one proves. Emails quote these exactly "
+             "and never invent others, so anything you leave out is never mentioned.",
      "placeholder": "e.g. Client A (offer X): result in numbers. Client B (offer Y): what we made, link."},
     {"id": "who", "question": "Who is it for?",
-     "help": "The kind of company, its size, where it is, and what it's doing when it needs you (launching, hiring, "
-             "raising money, opening a location...).",
-     "placeholder": "e.g. 5-50 person companies in the UK and US that just launched and have no ..."},
+     "help": "The kind of company, its size, where it is, what it's doing when it needs you (launching, hiring, "
+             "raising money...), and who to skip.",
+     "placeholder": "e.g. 5-50 person companies in the UK and US that just launched. Skip agencies and enterprises."},
     {"id": "decider", "question": "Who do you write to?",
-     "help": "The job title of the person who decides, and what they care about most.",
-     "placeholder": "e.g. The founder at small companies, the head of marketing at bigger ones. They care about ..."},
+     "help": "The job title of the person who decides, what they care about, and what they usually object to, "
+             "with your honest answer.",
+     "placeholder": "e.g. The founder at small companies. They care about ... They say \"we'll do it in-house\"; "
+                    "we answer ..."},
+    {"id": "why", "question": "Why you?",
+     "help": "What buyers use instead of you (other firms, in-house, doing nothing) and why they pick you.",
+     "placeholder": "e.g. Usually freelancers. We win because ..."},
     {"id": "voice", "question": "How should your emails sound?",
      "help": "Your name and sign-off, words you never want used, and one email you'd be happy to send (or one that "
              "got a reply).",
@@ -183,57 +187,6 @@ def profile_questions() -> dict[str, object]:
                             "help": f"{FILE_LABELS[name]} · {section}" + (f" · {hint}" if hint else ""),
                             "line": line.strip()})
     return {"questions": CORE_QUESTIONS, "missing": missing}
-
-
-def _filled_line(line: str, answer: str) -> str:
-    """A template line with its TODO replaced by the user's answer, keeping the label and indentation."""
-    indent = re.match(r"\s*", line).group(0)
-    bullet = re.match(r"\s*([-*]|\d+\.)\s+", line)
-    marker = bullet.group(1) + " " if bullet else ""
-    answer = answer.strip()
-    if not bullet:  # a free-text spot, e.g. "TODO paste 1-3 real emails that got replies."
-        return answer
-    one_line = re.sub(r"\s*\n\s*", " ", answer)
-    text = line[bullet.end():]
-    for arrow in ("→", "->"):
-        if arrow in text and "TODO" in text.partition(arrow)[2]:
-            objection = re.sub(r"\bTODO\b\s*", "", text.partition(arrow)[0]).strip()
-            return f"{indent}{marker}{objection} {arrow} {one_line}"
-    label, sep, rest = text.partition(":")
-    if sep and "TODO" not in label and "TODO" in rest:
-        return f"{indent}{marker}{label.strip()}: {one_line}"
-    weight = re.match(r"([1-5]\s*[—–-]+\s*)TODO", text)  # "- 5 — TODO e.g. ...": keep the weight
-    return f"{indent}{marker}{weight.group(1) if weight else ''}{one_line}"
-
-
-def apply_answers(answers: list[dict[str, object]]) -> dict[str, object]:
-    """Write answers to the 'still missing' questions straight into their TODO lines, as suggestions the user
-    reviews (no agent needed). Builds on a suggestion already waiting, so answers add up. Returns the files changed
-    and how many answers need an agent (the core questions about offers, proof and voice)."""
-    by_id = {str(a.get("id")): str(a.get("answer") or "") for a in answers if str(a.get("answer") or "").strip()}
-    lines_by_file: dict[str, list[tuple[str, str]]] = {}
-    for q in profile_questions()["missing"]:
-        if q["id"] in by_id:
-            lines_by_file.setdefault(q["file"], []).append((q["line"], by_id[q["id"]]))
-    changed = []
-    for name, fills in lines_by_file.items():
-        waiting = _proposal_path(name)
-        content = waiting.read_text(encoding="utf-8") if waiting.exists() else str(read_brain()[name]["content"])
-        lines = content.splitlines()
-        for original, answer in fills:
-            at = next((i for i, ln in enumerate(lines) if ln.strip() == original and "TODO" in ln), None)
-            if at is None:
-                continue
-            lines[at] = _filled_line(lines[at], answer)
-            # "1. TODO / 2. TODO / 3. TODO" under one label was one question: the answer replaces them all
-            while at + 1 < len(lines) and re.fullmatch(r"\s*(?:[-*]|\d+\.)\s*TODO\s*", lines[at + 1]):
-                del lines[at + 1]
-        new = "\n".join(lines) + "\n"
-        if new.strip() != content.strip():
-            propose(name, new)
-            changed.append(name)
-    core_ids = {q["id"] for q in CORE_QUESTIONS}
-    return {"proposed": changed, "core_answers": sum(1 for i in by_id if i in core_ids)}
 
 
 def _proposal_path(name: str) -> Path:

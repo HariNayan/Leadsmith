@@ -202,6 +202,9 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "Fill business profile from your answers",
         "The user answered questions about their business. Turn the answers into their business profile.\n"
         "Their answers:\n---\n{answers}\n---\n"
+        "The profile's open TODO lines right now (file: line):\n{todos}\n"
+        "Fill every one of these that the answers cover, even when the answer was given to a different question "
+        "(e.g. a sign-off mentioned under voice, locations under who it's for). Leave the others as they are.\n"
         "First call brain_read. Then, for each of company, icp, personas and voice that the answers change, call "
         "brain_propose(file, content) once with the COMPLETE new file. Where brain_read shows a waiting suggestion for "
         "a file, start from that version: the user's quick answers are already in it. The user compares it with the "
@@ -405,9 +408,12 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
                                  "that same thread and must read naturally after it. ") if sent else "")
         return PROMPTS["rewrite"][0].format(**values), PROMPTS["rewrite"][1].format(**values)
     if kind == "profile":
+        from .brain import profile_questions
+
         values["answers"] = _answers_text(params.get("answers"))
         if not values["answers"]:
             raise ValueError("Answer at least one question first.")
+        values["todos"] = "\n".join(f"- {m['file']}: {m['line']}" for m in profile_questions()["missing"]) or "(none)"
     if kind == "autofill" and not values["website"]:
         raise ValueError("Enter your website.")
     if kind == "custom" and not values["prompt"].strip():

@@ -115,14 +115,6 @@ async def profile_questions(request: Request) -> Response:
     return ok(questions())
 
 
-async def profile_fill(request: Request) -> Response:
-    """Answers to the 'still missing' questions go straight into their lines, as suggestions to review."""
-    from .brain import apply_answers
-
-    answers = (await body(request)).get("answers") or []
-    return ok(apply_answers(answers if isinstance(answers, list) else []))
-
-
 async def profile_proposals(request: Request) -> Response:
     from .brain import proposals
 
@@ -919,7 +911,6 @@ def create_app(port: int = 4600):
         Route("/api/suggestions", _wrap(suggestions)),
         Route("/api/profile/questions", _wrap(profile_questions)),
         Route("/api/profile/offer-check", _wrap(offer_check), methods=["POST"]),
-        Route("/api/profile/fill", _wrap(profile_fill), methods=["POST"]),
         Route("/api/profile/proposals", _wrap(profile_proposals)),
         Route("/api/profile/proposals/{name}", _wrap(profile_proposal), methods=["POST", "DELETE"]),
         Route("/api/sources", _wrap(sources)),

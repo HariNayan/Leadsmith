@@ -176,7 +176,7 @@ class ProfileQuestionTests(unittest.TestCase):
     def test_core_questions_then_one_per_open_todo(self):
         self.brain.write_brain("voice", "# Voice\n\n## Sender\n- Name: Sam\n- Sign-off: TODO (e.g. \"Priya\")\n\n## Never\n- TODO add your own banned words\n")
         result = self.brain.profile_questions()
-        self.assertEqual([q["id"] for q in result["questions"]][:3], ["lead_offer", "offers", "proof"])
+        self.assertEqual([q["id"] for q in result["questions"]], ["offers", "proof", "who", "decider", "why", "voice"])
         voice = [m for m in result["missing"] if m["file"] == "voice"]
         self.assertEqual([m["question"] for m in voice], ["Sign-off?", "Add your own banned words."])
         self.brain.write_brain("personas", "# Personas\n<!-- notes\n with a TODO inside -->\n## Persona 1: TODO name\n"
@@ -187,40 +187,6 @@ class ProfileQuestionTests(unittest.TestCase):
         text = " ".join(q["question"] + q["help"] for q in result["questions"]).lower()
         for niche in ("video", "saas", "course", "creator", "solar"):  # works for any business
             self.assertNotIn(niche, text)
-
-    def test_missing_lines_fill_instantly(self):
-        self.brain.write_brain("voice", "# Voice\n\n## Sender\n- Sign-off: TODO (e.g. \"Priya\")\n\n## Never\n"
-                                        "- TODO add your own banned words\n\n## Emails that worked for us\n"
-                                        "TODO paste 1-3 real emails that got replies.\n")
-        self.brain.write_brain("personas", "# Personas\n## Persona 1: Founder\n- Top pains:\n  1. TODO\n  2. TODO\n"
-                                           "- \"We use X\" → TODO\n")
-        self.brain.write_brain("icp", "# ICP\n## Buying signals (intent) — weight 1-5\n- 5 — TODO e.g. Hiring\n")
-        missing = {m["question"]: m["id"] for m in self.brain.profile_questions()["missing"]}
-        result = self.brain.apply_answers([
-            {"id": missing["Sign-off?"], "answer": "Sam"},
-            {"id": missing["Paste 1-3 real emails that got replies."], "answer": "Hi Kevin,\n\nThe page has no film.\n\nWould this help?"},
-            {"id": missing["Top pains?"], "answer": "slow launches, no demo"},
-            {"id": missing['Your honest answer to "We use X"'], "answer": "We work alongside X"},
-            {"id": missing["Buying signals (intent) — weight 1-5?"], "answer": "Just launched with no demo video"},
-            {"id": missing["Add your own banned words."], "answer": " "},  # skipped
-            {"id": "proof", "answer": "Client A: 3x signups"}])  # a core question: for the agent
-        self.assertEqual(sorted(result["proposed"]), ["icp", "personas", "voice"])
-        self.assertEqual(result["core_answers"], 1)
-        self.assertEqual(self.brain.read_brain()["voice"]["content"].count("TODO"), 3)  # nothing saved yet
-        voice = next(p for p in self.brain.proposals() if p["file"] == "voice")["after"]
-        self.assertIn("- Sign-off: Sam\n", voice)
-        self.assertIn("- TODO add your own banned words", voice)
-        self.assertIn("Hi Kevin,\n\nThe page has no film.", voice)
-        personas = next(p for p in self.brain.proposals() if p["file"] == "personas")["after"]
-        self.assertIn("- Top pains:\n  1. slow launches, no demo\n- \"We use X\" → We work alongside X", personas)
-        icp = next(p for p in self.brain.proposals() if p["file"] == "icp")["after"]
-        self.assertIn("- 5 — Just launched with no demo video", icp)
-        # more answers later build on the suggestion that's waiting
-        missing = {m["question"]: m["id"] for m in self.brain.profile_questions()["missing"]}
-        self.brain.apply_answers([{"id": missing["Add your own banned words."], "answer": "synergy"}])
-        voice = next(p for p in self.brain.proposals() if p["file"] == "voice")["after"]
-        self.assertIn("- Sign-off: Sam", voice)
-        self.assertIn("- synergy", voice)
 
     def test_suggestions_change_nothing_until_saved(self):
         before = self.brain.read_brain()["company"]["content"]
@@ -245,6 +211,7 @@ class ProfileQuestionTests(unittest.TestCase):
         self.assertNotIn("Who is it for?", prompt)  # blank answers are skipped
         self.assertIn("brain_propose", prompt)
         self.assertIn("never call brain_write", prompt)
+        self.assertIn("open TODO lines", prompt)  # the agent fills the TODOs the six answers cover
         self.assertEqual(server.SCOPES["profile"], {"leadsmith_status", "brain_read", "brain_propose"})
         with self.assertRaises(ValueError):
             jobs._fmt("profile", {"answers": []})
