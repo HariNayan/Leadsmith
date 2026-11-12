@@ -1194,6 +1194,11 @@ function renderComposer(steps) {
         ${ideas.length ? ideaCards(ideas) : ""}
       </div>`;
     })()}
+    ${c.has_deck ? `<div class="deck-strip">
+      <div class="deck-strip-head">${icon("file", "sm")}<b>Deck for ${esc(c.company || c.domain)}</b><span>what they'll open with the first email</span>
+        <a class="btn sm ghost" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener" style="margin-left:auto">${icon("external", "sm")}Open PDF</a></div>
+      <iframe src="/api/decks/${encodeURIComponent(c.domain)}/preview?v=${encodeURIComponent(c.deck_updated || "")}" title="Deck pages for ${esc(c.company || c.domain)}" loading="lazy" tabindex="-1"></iframe>
+    </div>` : ""}
     <div class="steps" role="tablist">${steps.map((x) => `<button role="tab" data-step="${x.id}" class="${x.id === s.id ? "active" : ""}" aria-selected="${x.id === s.id}">${x.kind === "reply" ? "Your reply" : x.channel === "linkedin" ? "LinkedIn note" : `Email ${x.step}`}<span class="day">${x.kind === "reply" ? "answer" : x.channel === "linkedin" ? "manual" : x.step === 1 ? "Day 0" : `Day ${x.send_after_days}`}</span>${x.status !== "draft" ? badge(x.status, null, false) : ""}</button>`).join("")}</div>
     <div class="mail" data-draft="${s.id}">
       ${s.channel === "email" ? `

@@ -162,21 +162,34 @@ PROMPTS: dict[str, tuple[str, str]] = {
     ),
     "deck": (
         "Build decks: {domains_short}",
-        "Build a personalised 4-page PDF deck for each of these accounts: {domains}.\n"
+        "Build a personalised PDF deck for each of these accounts: {domains}.\n"
         "First call brain_read (company, proof, voice, email_style). Then for each account call get_account (research, "
         "signals, ideas, contacts, and `deck`). Skip an account whose `deck` already has a `pdf_path`, unless the "
         "user asked to rebuild.\n{deck_slides}{brief_line}\n"
         "Use only facts from the account's saved signals and research and proof written in company.md: no invented "
         "numbers, clients or results. Name the company and its real product or work. {deck_voice}\n"
-        "Call save_deck exactly like this, once per account, with the finished content:\n"
+        "Call save_deck exactly like this, once per account, with the finished content (a fictional example; write "
+        "yours from the account):\n"
         "save_deck({{domain: \"acme.com\", title: \"Acme × <your company>: <the idea in a few words>\", slides: [\n"
-        "  {{heading: \"<one line>\", body: \"<1-2 sentences>\", bullets: [\"<point>\", \"<point>\"], "
-        "highlight: \"<optional big stat or quote>\", kicker: \"<optional small label>\"}},\n"
-        "  ... 4 slides in all ...]}})\n"
-        "Every slide needs a heading and a body or bullets; the field names must be exactly these. Never save a test or "
-        "placeholder deck to find out the format: it's given above, and it overwrites the prospect's real deck. If "
-        "save_deck returns an `error`, fix what it says and save again. Check it returned a `pdf`. Don't write or "
-        "change any emails, and don't read or open other files.{extra}",
+        "  {{layout: \"cover\", heading: \"A 45-second payouts walkthrough for Acme\", body: \"So developers see a payout "
+        "land before they sign up.\"}},\n"
+        "  {{layout: \"insight\", kicker: \"What we noticed\", heading: \"The payouts page explains, but never shows\", "
+        "highlight: \"0 videos\", body: \"Docs and a pricing table, and nothing that shows a payout landing in under a "
+        "minute, which is the whole promise.\"}},\n"
+        "  {{layout: \"concept\", heading: \"What we'd make\", body: \"One walkthrough film, cut three ways.\", "
+        "bullets: [\"45-second hero film for the payouts page\", \"Three 15-second clips for launch posts\", "
+        "\"Captioned for sound-off viewing\"]}},\n"
+        "  {{layout: \"sample\", heading: \"The first three shots\", frames: [\"Shot 1: a developer pastes one API call\", "
+        "\"Shot 2: the payout status flips to sent\", \"Shot 3: the money lands, 41 seconds on the clock\"]}},\n"
+        "  {{layout: \"plan\", heading: \"Two weeks, start to finish\", body: \"We need one product walkthrough call.\", "
+        "steps: [\"Week 1: script and storyboard for your sign-off\", \"Week 2: production and three cutdowns\", "
+        "\"Day 14: final files for the page\"]}},\n"
+        "  {{layout: \"next\", heading: \"Start with the first 15 seconds\", body: \"<the smallest first project>\", "
+        "highlight: \"Just reply to this email\"}}]}})\n"
+        "The field names must be exactly these. Every slide needs a heading and a body, bullets, frames or steps, and "
+        "at most 90 words. Never save a test or placeholder deck to find out the format: it's given above, and it "
+        "overwrites the prospect's real deck. If save_deck returns an `error`, fix what it says and save again. Check "
+        "it returned a `pdf`. Don't write or change any emails, and don't read or open other files.{extra}",
     ),
     "autofill": (
         "Fill business profile from {website}",
@@ -225,7 +238,8 @@ def _answers_text(answers: Any) -> str:
 
 DECK_NOTE = ("\nDecks are built by a separate deck step (on the deck engine), not by you: never call save_deck. "
              "Where get_account shows the account's `deck` with a `pdf_path`, attach it to step 1 (attach_deck=true) "
-             "and mention it as the email style says. Where there is no PDF, write the email without any deck sentence.")
+             "and mention it as the email style says, naming what its sample slide shows (`deck.sample`) rather than "
+             "a page count. Where there is no PDF, write the email without any deck sentence.")
 
 DECK_VOICE = (
     "The slides are for the prospect, not for the user: write them as a finished, polished document. Every fact "
@@ -238,14 +252,20 @@ DECK_VOICE = (
 DECK_SLIDES = {
     "personal_pitch": (
         "If the account has no ideas yet, first save_ideas with the single strongest idea first (plus up to two "
-        "alternatives), each answering a saved signal, so the emails and the deck pitch the same thing. Slides: "
-        "1) their moment (cite a saved signal and why it matters now), 2) what you'd make for them (the first idea, "
-        "made specific to their product or work), 3) the concrete plan: scope, format, timeline, with proof from "
-        "company.md, 4) the next step: a short call."),
+        "alternatives), each answering a saved signal, so the emails and the deck pitch the same thing. Six slides, "
+        "each with its layout: 1) cover: the first idea, made specific to them, in one line. 2) insight: the gap from "
+        "the research (a `gap` signal if there is one) and the one fact that shows it; their homepage screenshot is "
+        "placed beside it. 3) concept: what you'd make for them, named exactly, and its parts. 4) sample: a small piece "
+        "of the actual work made for them in 3-4 frames (storyboard shots, the first script lines, or the first "
+        "items of the plan): this is what makes the deck stand out, so make it concrete to their product. 5) plan: "
+        "scope and timeline as steps, and what you need from them. 6) proof, only with the proof the task gives for "
+        "this offer (the user's work images are added beside it); with no proof for this offer, make slide 6 a next "
+        "slide instead: the smallest first project, and the ask."),
     "idea_menu": (
         "If the account has no ideas yet, first save_ideas with three ideas (A, B, C), each answering a saved signal. "
-        "Slides: 1) their situation (cite saved signals), 2) the three ideas, 3) the strongest idea in detail with "
-        "proof from company.md, 4) the next step: reply with A, B or C."),
+        "Six slides, each with its layout: 1) cover. 2) insight: the gap and the fact that shows it. 3) concept: the "
+        "three ideas as bullets (\"A) ...\", \"B) ...\", \"C) ...\"). 4) sample: idea A made concrete in 3-4 frames. "
+        "5) plan: idea A's steps. 6) next: reply with A, B or C (the highlight), and the smallest first project."),
 }
 
 

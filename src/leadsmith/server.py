@@ -728,11 +728,27 @@ def save_deck(domain: str, title: str, slides: list[dict]) -> dict:
     """Create a personalised PDF deck for an account (rendered with the local Chrome/Edge). The user can attach it to an email in the dashboard.
     The prospect reads it: facts must come from saved signals or the brain, but never print sources on the slides
     (no URLs, no "saved"/"signal"/"research" notes, no dates of when something was found).
+    Their logo, brand colour and a screenshot of their homepage (beside the insight slide) and the user's logo and work
+    images (on the proof slide) are added automatically.
+
+    Layouts, usually in this order (6 slides):
+      cover: the idea for them in one line (heading) + one sentence (body).
+      insight: the gap you found (heading), the one number or fact that shows it (highlight), what it costs them (body).
+      concept: what you'd make, named exactly (heading, body), and its 3-4 parts (bullets).
+      sample: a small piece of the actual work made for them, in 3-4 "frames" ("Shot 1: ...", "Line 1: ...").
+      plan: scope and timeline as 3-5 "steps" ("Week 1: ..."), and what you need from them (body).
+      proof: the proof written for this offer (bullets), a client quote if there is one (highlight). With no proof for
+             this offer, use next instead.
+      next: the next step and the smallest first project (body, bullets); highlight = the ask in a few words.
+    Refused: a deck of 4+ slides with no sample slide, one that never names the company, slides that repeat another
+    company's deck, and slides over 90 words.
 
     Args:
         domain: account domain
-        title: deck title, e.g. "Acme × YourCo: filling the Q4 pipeline"
-        slides: 4 slides, each {"heading": str, "body": str (1-2 sentences), "bullets": [str] (max 4), "highlight": str (optional big stat/quote), "kicker": str (optional small label)}
+        title: deck title, e.g. "Acme × YourCo: a 45-second payouts walkthrough"
+        slides: 3-6 slides, each {"layout": str, "heading": str, "body": str (1-2 sentences), "bullets": [str] (max 4),
+                "highlight": str (optional big number, fact or quote), "kicker": str (optional small label),
+                "frames": [str] (sample only), "steps": [str] (plan only)}
     """
     if not slides:
         return {"error": "slides is empty"}

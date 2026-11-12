@@ -352,5 +352,110 @@ class IdeaSwapTests(unittest.TestCase):
         self.assertEqual(tags["ask"], "interest")
 
 
+GOOD_DECK = [
+    {"layout": "cover", "heading": "A 45-second payouts walkthrough for Lumen", "body": "So developers see a payout land."},
+    {"layout": "insight", "heading": "The Lumen payouts page explains, but never shows", "highlight": "0 videos",
+     "body": "Docs and a pricing table, and nothing showing a payout landing in under a minute."},
+    {"layout": "concept", "heading": "What we'd make", "body": "One film, cut three ways.",
+     "bullets": ["45-second hero film", "Three 15-second launch clips", "Captions for sound-off"]},
+    {"layout": "sample", "heading": "The first three shots", "frames": [
+        "Shot 1: a developer pastes one API call", "Shot 2: the status flips to sent", {"title": "Shot 3", "text": "the money lands"}]},
+    {"layout": "plan", "heading": "Two weeks", "body": "One walkthrough call from you.",
+     "steps": ["Week 1: script and storyboard", {"label": "Week 2", "detail": "production and cutdowns"}]},
+    {"layout": "proof", "heading": "Work we've done", "bullets": ["Launch demos for Slashy (YC S25)"]},
+]
+
+
+class DeckTests(unittest.TestCase):
+    def setUp(self):
+        from leadsmith import decks
+        self.decks = decks
+        db.upsert_account("lumen-pay.com", name="Lumen")
+        patches = [mock.patch.object(decks, "prospect_brand", return_value={"color": "#0b6e4f", "logo": None}),
+                   mock.patch.object(decks, "site_screenshot", return_value="data:image/png;base64,AAAA"),
+                   mock.patch.object(decks, "find_browser", return_value=None)]  # no Chrome in tests: HTML only
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_layouts_frames_and_steps(self):
+        slides, problem = self.decks.normalize_slides(GOOD_DECK)
+        self.assertIsNone(problem)
+        self.assertEqual(slides[3]["frames"][2], "Shot 3: the money lands")
+        self.assertEqual(slides[4]["steps"], ["Week 1: script and storyboard", "Week 2: production and cutdowns"])
+        self.assertEqual([self.decks.layout_of(s, i, 6) for i, s in enumerate(slides)],
+                         ["cover", "insight", "concept", "sample", "plan", "proof"])
+        # without layouts, position and content decide
+        plain = [{"heading": "a", "body": "b"}, {"heading": "c", "body": "d"}, {"heading": "e", "frames": ["f"]},
+                 {"heading": "g", "steps": ["h"]}, {"heading": "i", "body": "j"}]
+        self.assertEqual([self.decks.layout_of(s, i, 5) for i, s in enumerate(plain)],
+                         ["cover", "insight", "sample", "plan", "next"])
+
+    def test_wordy_and_placeholder_slides_are_refused(self):
+        _, problem = self.decks.normalize_slides([GOOD_DECK[0], {"heading": "Long", "body": "word " * 95}, GOOD_DECK[2]])
+        self.assertIn("under 90", problem)
+        _, problem = self.decks.normalize_slides([GOOD_DECK[0], {"heading": "Next", "body": "<the smallest first project>"},
+                                                  GOOD_DECK[2]])
+        self.assertIn("placeholder", problem)
+
+    def test_a_deck_needs_a_sample_and_the_company(self):
+        no_sample = [s for s in GOOD_DECK if s["layout"] != "sample"]
+        self.assertIn("sample slide", self.decks.build("lumen-pay.com", "Lumen × Studio", no_sample)["error"])
+        anonymous = [{**s, "heading": s["heading"].replace("Lumen", "the")} for s in GOOD_DECK]
+        self.assertIn("never names Lumen", self.decks.build("lumen-pay.com", "Payouts film", anonymous)["error"])
+
+    def test_render_uses_their_brand_your_work_and_their_site(self):
+        folder = self.decks.portfolio_dir()
+        folder.mkdir(parents=True, exist_ok=True)
+        png = bytes.fromhex("89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+                            "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082")
+        (folder / "logo.png").write_bytes(png)
+        (folder / "payouts-demo.png").write_bytes(png)
+        (folder / "bakery-reel.png").write_bytes(png)
+        (folder / "captions.txt").write_text("payouts-demo.png: Payouts demo film for a fintech\n", encoding="utf-8")
+        try:
+            result = self.decks.build("lumen-pay.com", "Lumen × Studio: payouts walkthrough", GOOD_DECK)
+            self.assertIsNone(result["pdf"])  # no browser in this test
+            self.assertEqual(result["pages"], 6)
+            self.assertEqual(result["sample"], "The first three shots")
+            self.assertTrue(result["used"]["their_site"] and result["used"]["your_logo"])
+            page = (config.DECK_DIR / "lumen-pay.com.html").read_text(encoding="utf-8")
+            for part in ('class="page cover"', 'class="page sample"', 'class="timeline"', 'class="browser"',
+                         "--accent: #0b6e4f", "Payouts demo film for a fintech", "data:image/png;base64,"):
+                self.assertIn(part, page)
+            self.assertLess(page.index("Payouts demo film"), page.index("Bakery reel"))  # closest caption first
+            self.assertIn("zoom:.2", self.decks.preview_html("lumen-pay.com"))
+            deck = db.dossier("lumen-pay.com")["deck"]
+            self.assertEqual(deck["pages"], 6)
+            self.assertIn("Shot 1", deck["sample"])
+        finally:
+            for name in ("logo.png", "payouts-demo.png", "bakery-reel.png", "captions.txt"):
+                (folder / name).unlink(missing_ok=True)
+
+    def test_a_deck_copied_from_another_company_is_refused(self):
+        db.upsert_account("other-pay.com", name="Otherpay")
+        copied = [{**s, "heading": s["heading"].replace("Lumen", "Otherpay")} for s in GOOD_DECK]
+        for s in copied:
+            if s.get("body"):
+                s["body"] += " Built around the plan for the launch week and the first three weeks after it."
+        with db.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO decks (domain, title, slides, pdf_path, error, updated_at) VALUES (?, ?, ?, NULL, NULL, ?)",
+                         ("other-pay.com", "x", __import__("json").dumps(self.decks.normalize_slides(copied)[0]), db.now()))
+        self.addCleanup(self._forget_other_deck)
+        mine = [{**s, "heading": s["heading"].replace("Otherpay", "Lumen")} for s in copied]
+        result = self.decks.build("lumen-pay.com", "Lumen × Studio", mine)
+        self.assertIn("nearly repeat the deck made for other-pay.com", result["error"])
+
+    @staticmethod
+    def _forget_other_deck():
+        with db.connect() as conn:
+            conn.execute("DELETE FROM decks WHERE domain = 'other-pay.com'")
+
+    def test_brand_colours_that_wouldnt_read_are_dropped(self):
+        self.assertEqual(self.decks.usable_accent("#0B6E4F"), "#0b6e4f")
+        for colour in ("#ffffff", "#fafafa", "#000000", "#777777", "not a colour", None):
+            self.assertIsNone(self.decks.usable_accent(colour), colour)
+
+
 if __name__ == "__main__":
     unittest.main()

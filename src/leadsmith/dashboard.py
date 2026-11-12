@@ -367,7 +367,7 @@ async def list_drafts(request: Request) -> Response:
     domain = request.query_params.get("domain") or None
     drafts = db.drafts(status, 2000, domain)
     with db.connect() as conn:
-        deck_domains = {r[0] for r in conn.execute("SELECT domain FROM decks WHERE pdf_path IS NOT NULL")}
+        deck_domains = {r[0]: r[1] for r in conn.execute("SELECT domain, updated_at FROM decks WHERE pdf_path IS NOT NULL")}
         accounts = {r["domain"]: r for r in db.rows(conn.execute(
             "SELECT domain, why_now, fit_score, intent_score, location, timezone FROM accounts"))}
     ideas = _ideas_by_domain({d["domain"] for d in drafts})
@@ -378,6 +378,7 @@ async def list_drafts(request: Request) -> Response:
         ))}
     for d in drafts:
         d["has_deck"] = d["domain"] in deck_domains
+        d["deck_updated"] = deck_domains.get(d["domain"])
         d["why_now"] = (accounts.get(d["domain"]) or {}).get("why_now")
         d["first_subject"] = first_subjects.get(d["contact_id"])
         d["region"] = compliance.region(accounts.get(d["domain"]) or {"domain": d["domain"]}, d.get("email"))
@@ -811,6 +812,16 @@ async def deck_file(request: Request) -> Response:
     raise ApiError("Deck file missing", 404)
 
 
+async def deck_preview(request: Request) -> Response:
+    """The deck's pages as small thumbnails, for the Review screen."""
+    from starlette.responses import HTMLResponse
+
+    page = decks.preview_html(request.path_params["domain"])
+    if page is None:
+        raise ApiError("No deck yet", 404)
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+
+
 async def export(request: Request) -> Response:
     from .server import export_csv
 
@@ -940,6 +951,7 @@ def create_app(port: int = 4600):
         Route("/api/settings", _wrap(put_settings), methods=["PUT"]),
         Route("/api/settings/test-gmail", _wrap(test_gmail), methods=["POST"]),
         Route("/api/decks/{domain}", _wrap(deck_file)),
+        Route("/api/decks/{domain}/preview", _wrap(deck_preview)),
         Route("/api/export/{kind}", _wrap(export)),
         Mount("/static", StaticFiles(directory=WEB_DIR), name="static"),
     ]

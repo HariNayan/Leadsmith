@@ -189,8 +189,17 @@ def get_bool(key: str, default: bool = False) -> bool:
 def ensure_home() -> list[str]:
     """Create the workspace from templates. Never overwrites user files."""
     created: list[str] = []
-    for directory in (HOME, BRAIN_DIR, EXPORT_DIR, DECK_DIR):
+    for directory in (HOME, BRAIN_DIR, EXPORT_DIR, DECK_DIR, HOME / "portfolio"):
         directory.mkdir(parents=True, exist_ok=True)
+    readme = HOME / "portfolio" / "README.txt"
+    if not readme.exists():
+        readme.write_text(
+            "Your logo and work for the decks.\n\n"
+            "- logo.png (or logo.svg / logo.jpg): shown on every deck's cover, next to the prospect's logo.\n"
+            "- Any other image (png, jpg, webp): a piece of your work. The proof slide shows the 1-3 whose captions\n"
+            "  best match the deck.\n"
+            "- captions.txt (optional): one line per image, e.g.  launch-film.jpg: Launch film for Acme, 2026\n"
+            "  Without it, the file name is the caption.\n", encoding="utf-8")
     for template in sorted((TEMPLATES / "brain").glob("*.md")):
         target = BRAIN_DIR / template.name
         if not target.exists():

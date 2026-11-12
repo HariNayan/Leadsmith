@@ -539,7 +539,16 @@ def dossier(domain: str) -> dict[str, Any] | None:
                 " WHERE contact_id = ? ORDER BY step", (contact["id"],),
             ))
         account["contacts"] = contacts
-        account["deck"] = one(conn.execute("SELECT title, pdf_path, error, updated_at FROM decks WHERE domain = ?", (domain,)))
+        account["deck"] = one(conn.execute("SELECT title, slides, pdf_path, error, updated_at FROM decks WHERE domain = ?", (domain,)))
+        if account["deck"]:
+            # What the writer may say about it: how many pages, and what the sample slide shows.
+            try:
+                slides = json.loads(account["deck"].pop("slides") or "[]")
+            except ValueError:
+                slides = []
+            sample = next((s for s in slides if s.get("layout") == "sample" or s.get("frames")), None)
+            account["deck"]["pages"] = len(slides)
+            account["deck"]["sample"] = (f"{sample['heading']}: " + "; ".join(sample.get("frames", [])[:3])) if sample else None
         account["ideas"] = rows(conn.execute(
             "SELECT id, letter, title, pitch, why, format, status, picked_by, picked_at FROM ideas WHERE domain = ? ORDER BY letter",
             (domain,),
