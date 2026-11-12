@@ -101,6 +101,12 @@ def brain_read() -> dict:
                        "voice.md may still say 'Offer ideas: no' to use a classic sequence instead. The ask is the "
                        "'which one first?' question; ask_how applies to a classic sequence."),
     }
+    waiting = {p["file"]: p["after"] for p in brain.proposals()}
+    if waiting:
+        result["waiting_suggestions"] = {
+            "how_to_use": "Suggested versions of these profile files are waiting for the user to review. When you "
+                          "suggest one of these files, start from this version: it already holds answers the user gave.",
+            "files": waiting}
     custom = templates.customised()
     if custom:
         result["step_templates"] = {

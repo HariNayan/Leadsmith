@@ -536,7 +536,7 @@ async function profileQuestions() {
   let at = 0;
   modal({
     title: "Tell us what you offer", art: "sparkles", wide: true, confirm: "Fill my profile",
-    intro: "Answer in your own words; rough is fine. An agent turns your answers into your business profile, and you check every file before anything is saved.",
+    intro: "Answer in your own words; rough is fine, and skip anything. Click <b>Fill my profile</b> whenever you like: missing lines are filled in at once, an agent shapes your answers about offers, proof and voice, and you check every file before anything is saved.",
     body: `<div class="qa">
       <div class="qa-progress"><span data-qa-count></span><div class="meter"><i data-qa-meter></i></div></div>
       <div data-qa-section class="qa-section"></div>
@@ -551,9 +551,24 @@ async function profileQuestions() {
       const list = all.filter((q) => (answers[q.id] || "").trim()).map((q) => ({
         id: q.id, question: q.optional ? `${q.question} (${q.help}; the line to fill: ${q.line})` : q.question, answer: answers[q.id] }));
       if (!list.length) throw new Error("Answer at least one question first.");
-      await startJob("profile", { answers: list });
+      // Answers to "still missing" questions go straight into their lines, no agent needed: reviewable right away.
+      const filled = await api("/api/profile/fill", { method: "POST", body: { answers: list } });
       state.profileAnswers = {};
-      toast("The agent is drafting your profile. When it's done, Review changes appears here.");
+      state.brainReview = filled.proposed.length > 0;
+      if (filled.core_answers) {
+        // Offers, proof, voice: an agent shapes these into the profile's sections, building on what's filled.
+        try {
+          await startJob("profile", { answers: list }, { quiet: true });
+          toast(`${filled.proposed.length ? "Filled the missing lines: review them now. " : ""}The agent is turning your other answers into the profile; its suggestions appear here when it's done. <a href="#/activity">View run</a>`, "ok", 8000);
+        } catch (e) {
+          if (e !== cancelled) throw e;
+          state.profileAnswers = answers;  // kept for next time
+          toast(`${filled.proposed.length ? "Filled the missing lines: review them now. " : ""}Connect an agent to turn your answers about offers, proof and voice into the profile.`, "error", 8000);
+        }
+      } else {
+        toast(filled.proposed.length ? "Filled. Check the changes, then Save." : "Nothing to fill from those answers.");
+      }
+      render();
     },
   });
   const root = $("#modal-root");
@@ -570,13 +585,15 @@ async function profileQuestions() {
     box.value = answers[q.id] || "";
     $("[data-qa-back]", root).disabled = at === 0;
     $("[data-qa-next]", root).disabled = at === all.length - 1;
+    nextLabel();
     box.focus();
   };
+  const nextLabel = () => { $("[data-qa-next]", root).innerHTML = `${box.value.trim() ? "Next" : "Skip"}${icon("chevron", "sm")}`; };
   const go = (step) => { keep(); at = Math.max(0, Math.min(all.length - 1, at + step)); show(); };
   $("[data-qa-back]", root).onclick = () => go(-1);
   $("[data-qa-next]", root).onclick = () => go(1);
   box.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (at < all.length - 1) go(1); else $("[data-ok]", root).click(); } };
-  box.oninput = keep;
+  box.oninput = () => { keep(); nextLabel(); };
   show();
 }
 

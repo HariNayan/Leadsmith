@@ -185,6 +185,57 @@ def profile_questions() -> dict[str, object]:
     return {"questions": CORE_QUESTIONS, "missing": missing}
 
 
+def _filled_line(line: str, answer: str) -> str:
+    """A template line with its TODO replaced by the user's answer, keeping the label and indentation."""
+    indent = re.match(r"\s*", line).group(0)
+    bullet = re.match(r"\s*([-*]|\d+\.)\s+", line)
+    marker = bullet.group(1) + " " if bullet else ""
+    answer = answer.strip()
+    if not bullet:  # a free-text spot, e.g. "TODO paste 1-3 real emails that got replies."
+        return answer
+    one_line = re.sub(r"\s*\n\s*", " ", answer)
+    text = line[bullet.end():]
+    for arrow in ("→", "->"):
+        if arrow in text and "TODO" in text.partition(arrow)[2]:
+            objection = re.sub(r"\bTODO\b\s*", "", text.partition(arrow)[0]).strip()
+            return f"{indent}{marker}{objection} {arrow} {one_line}"
+    label, sep, rest = text.partition(":")
+    if sep and "TODO" not in label and "TODO" in rest:
+        return f"{indent}{marker}{label.strip()}: {one_line}"
+    weight = re.match(r"([1-5]\s*[—–-]+\s*)TODO", text)  # "- 5 — TODO e.g. ...": keep the weight
+    return f"{indent}{marker}{weight.group(1) if weight else ''}{one_line}"
+
+
+def apply_answers(answers: list[dict[str, object]]) -> dict[str, object]:
+    """Write answers to the 'still missing' questions straight into their TODO lines, as suggestions the user
+    reviews (no agent needed). Builds on a suggestion already waiting, so answers add up. Returns the files changed
+    and how many answers need an agent (the core questions about offers, proof and voice)."""
+    by_id = {str(a.get("id")): str(a.get("answer") or "") for a in answers if str(a.get("answer") or "").strip()}
+    lines_by_file: dict[str, list[tuple[str, str]]] = {}
+    for q in profile_questions()["missing"]:
+        if q["id"] in by_id:
+            lines_by_file.setdefault(q["file"], []).append((q["line"], by_id[q["id"]]))
+    changed = []
+    for name, fills in lines_by_file.items():
+        waiting = _proposal_path(name)
+        content = waiting.read_text(encoding="utf-8") if waiting.exists() else str(read_brain()[name]["content"])
+        lines = content.splitlines()
+        for original, answer in fills:
+            at = next((i for i, ln in enumerate(lines) if ln.strip() == original and "TODO" in ln), None)
+            if at is None:
+                continue
+            lines[at] = _filled_line(lines[at], answer)
+            # "1. TODO / 2. TODO / 3. TODO" under one label was one question: the answer replaces them all
+            while at + 1 < len(lines) and re.fullmatch(r"\s*(?:[-*]|\d+\.)\s*TODO\s*", lines[at + 1]):
+                del lines[at + 1]
+        new = "\n".join(lines) + "\n"
+        if new.strip() != content.strip():
+            propose(name, new)
+            changed.append(name)
+    core_ids = {q["id"] for q in CORE_QUESTIONS}
+    return {"proposed": changed, "core_answers": sum(1 for i in by_id if i in core_ids)}
+
+
 def _proposal_path(name: str) -> Path:
     _path(name)  # validates the name
     return config.BRAIN_DIR / ".proposed" / f"{name}.md"
