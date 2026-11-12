@@ -983,8 +983,18 @@ def results_so_far(limit: int = 25) -> dict[str, Any]:
                             "`declined`. Favour sources with replies."),
         "replied": replied, "declined": declined,
         "sources": [s for s in source_stats() if s["contacted"] or s["good"] or s["bad"]],
+        "emails": _email_lessons(),
         "verdicts_given": verdicts,
     }
+
+
+def _email_lessons() -> dict[str, Any]:
+    """For the writer: reply rates by opening and by ask, with how much to trust them."""
+    stats = email_stats()
+    keep = lambda cells: [{k: c[k] for k in ("value", "sent", "replied", "rate", "enough")} for c in cells]  # noqa: E731
+    return {"how_to_use": f"First-email reply rates in this workspace. A version needs about {MIN_SAMPLE} sends before "
+                          "its rate means much: where `enough` is false, treat it as a hint only.",
+            "by_opener": keep(stats["dimensions"]["opener"]), "by_ask": keep(stats["dimensions"]["ask"])}
 
 
 def lead_feedback(limit: int = 40) -> list[dict[str, Any]]:
@@ -1035,6 +1045,51 @@ def source_stats() -> list[dict[str, Any]]:
         rated = row["good"] + row["bad"]
         row["good_rate"] = round(row["good"] / rated, 2) if rated else None
     return sorted(stats.values(), key=lambda r: (-(r["replied"]), -(r["good"]), -r["leads"]))
+
+
+MIN_SAMPLE = 150  # first emails per version before a difference in reply rate means much (at ~3% replies)
+
+
+def email_stats() -> dict[str, Any]:
+    """Reply rates of first emails by how they open, how they end, whether a deck went with them, and by month.
+    Only people count as replies: automatic answers (out of office, tickets) don't, even ones stored before they
+    were recognised."""
+    from . import lint
+    from .mailer import classify_reply
+
+    with connect() as conn:
+        sent = rows(conn.execute(
+            "SELECT d.body, d.attach_deck, d.tags, d.sent_at, c.status, c.reply_kind, c.last_reply FROM drafts d"
+            " JOIN contacts c ON c.id = d.contact_id WHERE d.step = 1 AND d.channel = 'email' AND d.kind = 'sequence'"
+            " AND d.status = 'sent'"))
+    dims: dict[str, dict[str, dict[str, Any]]] = {"opener": {}, "ask": {}, "deck": {}, "month": {}}
+    total = replied_total = 0
+    for row in sent:
+        try:
+            tags = json.loads(row["tags"]) if row["tags"] else {}
+        except ValueError:
+            tags = {}
+        auto = row["reply_kind"] == "auto" or (row["last_reply"] and classify_reply(row["last_reply"]) == "auto")
+        replied = not auto and (row["status"] in ("replied", "meeting") or row["reply_kind"] in ("reply", "not_interested"))
+        positive = replied and row["reply_kind"] != "not_interested" and row["status"] != "disqualified"
+        values = {"opener": tags.get("opener") or "untagged", "ask": lint.ask_kind(row["body"]) or "none",
+                  "deck": "with deck" if row["attach_deck"] else "no deck", "month": (row["sent_at"] or "")[:7] or "unknown"}
+        total += 1
+        replied_total += replied
+        for dim, value in values.items():
+            cell = dims[dim].setdefault(value, {"value": value, "sent": 0, "replied": 0, "positive": 0})
+            cell["sent"] += 1
+            cell["replied"] += replied
+            cell["positive"] += positive
+    out = {}
+    for dim, cells in dims.items():
+        listed = sorted(cells.values(), key=(lambda c: c["value"]) if dim == "month" else (lambda c: -c["sent"]))
+        for c in listed:
+            c["rate"] = round(c["replied"] / c["sent"], 4) if c["sent"] else None
+            c["enough"] = c["sent"] >= MIN_SAMPLE
+        out[dim] = listed
+    return {"dimensions": out, "sent": total, "replied": replied_total,
+            "rate": round(replied_total / total, 4) if total else None, "min_sample": MIN_SAMPLE}
 
 
 def step_templates() -> list[dict[str, Any]]:

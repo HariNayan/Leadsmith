@@ -277,6 +277,10 @@ async def put_template(request: Request) -> Response:
         raise ApiError(str(e)) from e
 
 
+async def what_works(request: Request) -> Response:
+    return ok(await asyncio.to_thread(db.email_stats))
+
+
 async def sources(request: Request) -> Response:
     return ok({"sources": db.source_stats(), "learning": db.results_so_far(limit=3)["learning"]})
 
@@ -910,6 +914,7 @@ def create_app(port: int = 4600):
         Route("/api/profile/proposals", _wrap(profile_proposals)),
         Route("/api/profile/proposals/{name}", _wrap(profile_proposal), methods=["POST", "DELETE"]),
         Route("/api/sources", _wrap(sources)),
+        Route("/api/what-works", _wrap(what_works)),
         Route("/api/templates", _wrap(get_templates)),
         Route("/api/templates/{step}", _wrap(put_template), methods=["PUT"]),
         Route("/api/accounts", _wrap(list_accounts)),

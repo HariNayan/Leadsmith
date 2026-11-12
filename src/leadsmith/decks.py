@@ -572,7 +572,7 @@ def preview_html(domain: str) -> str | None:
     path = config.DECK_DIR / f"{db.normalize_domain(domain)}.html"
     if not path.exists():
         return None
-    style = ("<style>html,body{background:transparent}body{display:flex;gap:28px;padding:16px;zoom:.2;"
-             "width:max-content}.page{flex:none;page-break-after:auto;border-radius:18px;"
-             "box-shadow:0 10px 40px rgba(0,0,0,.18)}</style>")
+    style = ("<style>html,body{background:transparent;overflow-y:hidden}body{display:flex;gap:40px;padding:30px 50px;"
+             "margin:0;zoom:.2;width:max-content}.page{flex:none;page-break-after:auto;border-radius:24px;"
+             "box-shadow:0 0 0 3px rgba(0,0,0,.08)}</style>")
     return path.read_text(encoding="utf-8").replace("</head>", style + "</head>", 1)

@@ -609,7 +609,7 @@ function proposalsPage(proposals) {
           <span class="proposal-meta">${p.unchanged ? "no changes" : `+${added} −${removed} lines`} · TODOs ${p.todos_before} → ${p.todos_after}</span>
           <div class="actions"><button class="btn sm" data-p-edit>${icon("edit", "sm")}Edit</button><button class="btn sm" data-p-discard>Discard</button><button class="btn sm primary" data-p-save>${icon("check", "sm")}Save</button></div></div>
         <div class="card-body">
-          <pre class="diff" data-p-diff>${lines.map(([k, t]) => `<span class="${k === "+" ? "ins" : k === "-" ? "del" : ""}">${k === " " ? "  " : k + " "}${esc(t)}</span>`).join("\n")}</pre>
+          <pre class="diff" data-p-diff>${lines.map(([k, t]) => `<span class="${k === "+" ? "ins" : k === "-" ? "del" : ""}">${k === " " ? "  " : k + " "}${esc(t) || " "}</span>`).join("")}</pre>
           <textarea data-p-text hidden spellcheck="true" aria-label="Suggested ${esc(p.label)}">${esc(p.after)}</textarea>
         </div></div>`;
     }).join("")}</div>`;
@@ -655,8 +655,8 @@ async function stepsPage() {
         <div class="card-body"><div class="styles" role="radiogroup" aria-label="Email style">
           ${[["idea_menu", "Idea menu", "Three ideas made for them. They reply with one letter.",
               "Hi Dana,\n\nSaw the Kestrel trail shoe launch. Three things I could make for you:\nA) 45-second launch walkthrough\nB) Three vertical clips for the drop\nC) A trail-tested customer story\n\nWhich one should I make first?"],
-             ["personal_pitch", "Personal pitch + deck", "One specific compliment, what you do for buyers like theirs, a deck made for them, a short call ask.",
-              "Hi Dana,\n\nThe new Kestrel trail shoe looks great, and the weeks before a drop are when product video does the most work.\n\nNorthlight Studio films footwear brands on real trails, so buyers can see grip and fit before they order.\n\nI've attached a 4-page deck made for Kestrel with a two-day shoot plan.\n\nWould a short call this week help?"]]
+             ["personal_pitch", "Personal pitch + deck", "The gap you noticed, the exact offer, a deck made for them with a sample inside, one easy ask.",
+              "Hi Dana,\n\nThe Kestrel trail shoe page shows six still photos, and grip is the one thing a photo can't show. With the drop three weeks out, that's where buyers stall.\n\nNorthlight Studio films footwear on real trails, so buyers see the grip before they order.\n\nI've attached a short deck for Kestrel with a two-day shoot plan and the first three shots.\n\nWould this help before the drop?"]]
             .map(([key, name, about, sampleText]) => `<label class="style-opt ${style === key ? "on" : ""}">
               <span class="style-top"><input type="radio" name="email-style" value="${key}" ${style === key ? "checked" : ""}><b>${name}</b></span>
               <span class="style-about">${esc(about)}</span>
@@ -700,7 +700,7 @@ async function stepsPage() {
     try {
       await api("/api/settings", { method: "PUT", body: { EMAIL_STYLE: r.value } });
       $$(".style-opt").forEach((l) => l.classList.toggle("on", l.contains(r)));
-      toast(r.value === "personal_pitch" ? "Personal pitch on: new drafts open with a compliment, a deck made for them and a call ask."
+      toast(r.value === "personal_pitch" ? "Personal pitch on: new drafts open with the gap you noticed and attach a deck made for them."
         : "Idea menu on: new drafts offer three ideas to pick from.");
     } catch (e) { fail(e); }
   }));
@@ -1346,7 +1346,7 @@ function renderComposer(steps) {
 
 // ── Outreach ───────────────────────────────────────────────────────────
 PAGES.outreach = async () => {
-  const { contacts, mail, scheduler, ideas: outreachIdeas = {} } = await api("/api/outreach");
+  const [{ contacts, mail, scheduler, ideas: outreachIdeas = {} }, works] = await Promise.all([api("/api/outreach"), api("/api/what-works").catch(() => null)]);
   const o = state.overview || {};
   const queued = contacts.reduce((n, c) => n + c.steps.filter((s) => s.status === "approved").length, 0);
   const sentTotal = contacts.reduce((n, c) => n + c.steps.filter((s) => s.status === "sent").length, 0);
@@ -1364,9 +1364,10 @@ PAGES.outreach = async () => {
     <div class="stats">
       <div class="card stat"><div class="label">${icon("clock", "sm")}Waiting to send</div><div class="value">${queued}</div><div class="foot">approved emails and follow-ups</div></div>
       <div class="card stat"><div class="label">${icon("send", "sm")}Sent today</div><div class="value">${mail.sent_today}<small> / ${mail.daily_limit}</small></div>${mail.warmup && !mail.warmup.done ? `<div class="foot">warm-up day ${mail.warmup.day}: limit grows to ${mail.daily_limit_max}</div>` : ""}<div class="meter"><i style="width:${Math.min(100, (mail.sent_today / (mail.daily_limit || 1)) * 100)}%"></i></div></div>
-      <div class="card stat"><div class="label">${icon("reply", "sm")}Replies</div><div class="value">${o.replied ?? 0}</div><div class="foot">${sentTotal ? `${Math.round(((o.replied || 0) / sentTotal) * 100)}% reply rate` : "no emails sent yet"}</div></div>
+      <div class="card stat"><div class="label">${icon("reply", "sm")}Replies</div><div class="value">${works ? works.replied : o.replied ?? 0}</div><div class="foot">${works?.sent ? `${(works.rate * 100).toFixed(1)}% of ${works.sent} first emails · people only` : sentTotal ? "" : "no emails sent yet"}</div></div>
       <div class="card stat"><div class="label">${icon("refresh", "sm")}Auto follow-ups</div><div class="value" style="font-size:16px;margin-top:10px">${scheduler.last_run ? `Checked ${ago(scheduler.last_run)}` : mail.send_enabled ? "Waiting" : "Off"}</div><div class="foot">${scheduler.last_result?.error ? esc(scheduler.last_result.error) : scheduler.last_result?.overdue_waiting ? `${scheduler.last_result.overdue_waiting} late follow-up(s) wait for you: use Review & send` : "every 30 min while open, never late ones"}</div></div>
     </div>
+    ${whatWorks(works)}
     <div class="card" style="margin-top:16px;overflow:hidden">
       <div class="card-head">${icon("users")}People in sequence<div class="actions"><a class="btn ghost sm" href="/api/export/sequences?status=approved">${icon("download", "sm")}Export</a></div></div>
       ${contacts.length ? `<div class="table-wrap"><table class="grid seq-table">
@@ -1441,6 +1442,31 @@ PAGES.outreach = async () => {
   watchSending();
 };
 
+// Reply rates of first emails by how they open, how they end, the deck, and the month. People only.
+const WORKS_LABELS = {
+  opener: ["How it opens", { gap: "The gap", person: "About them", news: "Their news", other: "Other", untagged: "Before tagging" }],
+  ask: ["How it ends", { interest: "Is it useful?", call: "A call", sample: "A first piece", none: "No question" }],
+  deck: ["Deck", {}],
+  month: ["Month", {}],
+};
+function whatWorks(w) {
+  if (!w || !w.sent) return "";
+  const top = Math.max(...Object.values(w.dimensions).flat().map((c) => c.rate || 0), 0.01);
+  const monthName = (v) => { const d = new Date(`${v}-01T12:00:00`); return isNaN(d) ? v : d.toLocaleDateString(undefined, { month: "short", year: "numeric" }); };
+  return `<div class="card works" style="margin-top:16px">
+    <div class="card-head">${icon("activity")}What works<span class="works-sub">replies from people to first emails; automatic answers don't count</span></div>
+    <div class="works-grid">${Object.entries(WORKS_LABELS).map(([dim, [title, names]]) => `
+      <div class="works-col"><div class="works-title">${esc(title)}</div>
+        ${(w.dimensions[dim] || []).map((c) => `<div class="works-row" title="${c.replied} of ${c.sent} replied">
+          <span class="works-name">${esc(dim === "month" ? monthName(c.value) : names[c.value] || cap(c.value))}</span>
+          <span class="works-bar"><i style="width:${Math.round(((c.rate || 0) / top) * 100)}%"></i></span>
+          <span class="works-num">${((c.rate || 0) * 100).toFixed(1)}%</span>
+          <span class="works-n ${c.enough ? "" : "thin"}">${c.sent}</span></div>`).join("")}
+      </div>`).join("")}</div>
+    <p class="help works-foot">${icon("info", "sm")} The grey number is how many were sent. Under ${w.min_sample} sends a rate is only a hint: a couple of replies either way can flip it.</p>
+  </div>`;
+}
+
 async function watchSending() {
   const box = $("#send-progress");
   if (!box || state.page !== "outreach") return;
@@ -1475,9 +1501,13 @@ function replyBlock(c, ideas) {
   if (c.reply_kind === "auto" && c.status !== "replied") return `<div class="reply">${c.last_reply ? `<div class="reply-text muted">${icon("clock", "sm")}<span>${esc(c.last_reply.slice(0, 160))}${c.last_reply.length > 160 ? "…" : ""}</span></div>` : ""}
     <div class="reply-pick">${icon("info", "sm")}<span>Automatic answer (out of office or a ticket), not a person. Follow-ups ${c.resume_after ? `wait until <b>${esc(day(c.resume_after))}</b>` : "carry on"}.</span>
       <button class="btn sm ghost" data-reply-kind="reply" data-reply-contact="${c.id}" title="It was a real person: stop the follow-ups">It's a real reply</button></div></div>`;
-  if (c.looks_auto) return `<div class="reply"><div class="reply-text muted">${icon("clock", "sm")}<span>${esc(c.last_reply.slice(0, 160))}${c.last_reply.length > 160 ? "…" : ""}</span></div>
-    <div class="reply-pick warn">${icon("alert", "sm")}<span>This looks like an automatic answer, so the follow-ups may have stopped too early.</span>
-      <button class="btn sm primary" data-reply-kind="auto" data-reply-contact="${c.id}" title="The unsent follow-ups go back to Review for you to approve">Resume follow-ups</button></div></div>`;
+  if (c.looks_auto) {
+    const stopped = (c.steps || []).filter((s) => s.kind !== "reply" && s.status === "cancelled" && !s.sent_at).length;
+    return `<div class="reply"><div class="reply-text muted">${icon("clock", "sm")}<span>${esc(c.last_reply.slice(0, 160))}${c.last_reply.length > 160 ? "…" : ""}</span></div>
+    ${stopped ? `<div class="reply-pick warn">${icon("alert", "sm")}<span>This looks like an automatic answer, so ${plural(stopped, "follow-up")} stopped too early.</span>
+      <button class="btn sm primary" data-reply-kind="auto" data-reply-contact="${c.id}" title="The unsent follow-ups go back to Review for you to approve">Resume follow-ups</button></div>`
+      : `<div class="reply-pick">${icon("info", "sm")}<span>An automatic answer, not a person, so it isn't counted as a reply.</span></div>`}</div>`;
+  }
   const replyDraft = (c.steps || []).find((s) => s.kind === "reply" && s.status !== "sent" && s.status !== "cancelled");
   const draftBtn = c.last_reply && c.reply_kind !== "optout"
     ? (replyDraft ? `<a class="btn sm" href="#/review" data-review-contact="${c.id}">${icon("inbox", "sm")}Review your reply</a>`

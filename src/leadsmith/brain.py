@@ -123,38 +123,63 @@ CORE_QUESTIONS = [
 ]
 
 
-def _todo_question(line: str) -> tuple[str, str] | None:
-    """('Sign-off', 'e.g. "Priya"') from a template line like '- Sign-off: TODO (e.g. "Priya")'."""
-    text = re.sub(r"<!--.*?-->", "", line).strip().lstrip("-*0123456789. ").strip()
+_IMPERATIVE = re.compile(r"^(add|paste|list|confirm|write|name|describe|give)\b", re.I)
+
+
+def _todo_question(line: str, section: str = "") -> tuple[str, str] | None:
+    """(question, hint) from a template line, e.g. '- Sign-off: TODO (e.g. "Priya")' gives ('Sign-off?', 'e.g. "Priya"')
+    and '- "We already use X" → TODO' gives ('Your honest answer to "We already use X"', '')."""
+    text = re.sub(r"<!--.*?-->", "", line).strip().lstrip("-*0123456789. —–").strip()
     if "TODO" not in text:
         return None
-    label, _, rest = text.partition(":")
-    if "TODO" in label:  # "- TODO e.g. Fewer than 5 employees": no label, the hint is the question
-        hint = re.sub(r"^TODO\s*", "", label).strip(" .")
-        return (hint, "") if hint else None
-    hint = re.sub(r"^\s*TODO\s*", "", rest).strip(" ()")
-    return label.strip(), hint
+    for arrow in ("→", "->"):
+        if arrow in text:  # an objection and its answer
+            objection, _, answer = text.partition(arrow)
+            objection = re.sub(r"\bTODO\b\s*", "", objection).strip()
+            hint = re.sub(r"\s*TODO\s*", " ", answer).strip(" ();.")
+            return f"Your honest answer to {objection}", (f"Now: {hint}" if hint else "")
+    label, sep, rest = text.partition(":")
+    if "TODO" not in label and sep:
+        return label.strip().rstrip("?") + "?", re.sub(r"^\s*TODO\s*", "", rest).strip(" ()")
+    # "- TODO e.g. Fewer than 5 employees", "- TODO real results in numbers (views...); the site publishes none"
+    hint = re.sub(r"\bTODO\b\s*", "", text).strip(" .")
+    if not hint:
+        return (section.rstrip("?") + "?", "") if section else None
+    if hint.lower().startswith("e.g."):
+        return (section.rstrip("?") + "?" if section else hint), hint
+    m = re.match(r"([^(;]*)(.*)", hint, re.S)  # the question, then any "(examples)" or "; note" as the hint
+    head, tail = m.group(1).strip(), m.group(2)
+    head = head[:1].upper() + head[1:]
+    question = head.rstrip(".") + ("." if _IMPERATIVE.match(head) else "?")
+    return question, tail.replace("(", "").replace(")", "").strip(" ;.")
 
 
 def profile_questions() -> dict[str, object]:
     """The core questions, plus one short question per TODO still open in the profile."""
     missing, seen = [], set()
     for name, info in read_brain().items():
-        section = ""
-        for line in str(info["content"]).splitlines():
+        section, label = "", ""
+        content = re.sub(r"<!--.*?-->", "", str(info["content"]), flags=re.S)  # template notes span lines
+        for line in content.splitlines():
             if line.startswith("#"):
-                section = line.lstrip("# ").strip()
+                # "## Persona 1: TODO name (e.g. ...)" shows as "Persona 1"
+                section = re.split(r":?\s*\bTODO\b", line.lstrip("# ").strip())[0].strip()
+                label = ""
                 continue
-            found = _todo_question(line)
+            bare = re.fullmatch(r"\s*(?:[-*]|\d+\.)\s*TODO\s*", line)
+            if line.strip().endswith(":") and "TODO" not in line:
+                label = line.strip().lstrip("-* ").rstrip(":")  # "- Top 3 pains we solve for them:" heads a list
+                continue
+            found = _todo_question(line, label or section) if not (bare and label) else (label + "?", "")
             if not found:
                 continue
-            label, hint = found
-            key = (name, label.lower())
+            question, hint = found
+            key = (name, question.lower())
             if key in seen:
                 continue
             seen.add(key)
             missing.append({"id": f"todo:{name}:{len(missing)}", "file": name,
-                            "question": label[:1].upper() + label[1:].rstrip("?:") + "?",
+                            "question": question[:1].upper() + question[1:],
                             "help": f"{FILE_LABELS[name]} · {section}" + (f" · {hint}" if hint else ""),
                             "line": line.strip()})
     return {"questions": CORE_QUESTIONS, "missing": missing}

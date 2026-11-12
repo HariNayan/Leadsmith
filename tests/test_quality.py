@@ -178,7 +178,11 @@ class ProfileQuestionTests(unittest.TestCase):
         result = self.brain.profile_questions()
         self.assertEqual([q["id"] for q in result["questions"]][:3], ["lead_offer", "offers", "proof"])
         voice = [m for m in result["missing"] if m["file"] == "voice"]
-        self.assertEqual([m["question"] for m in voice], ["Sign-off?", "Add your own banned words?"])
+        self.assertEqual([m["question"] for m in voice], ["Sign-off?", "Add your own banned words."])
+        self.brain.write_brain("personas", "# Personas\n<!-- notes\n with a TODO inside -->\n## Persona 1: TODO name\n"
+                                           "- Top pains:\n  1. TODO\n  2. TODO\n- \"We use X\" → TODO\n")
+        personas = [m["question"] for m in self.brain.profile_questions()["missing"] if m["file"] == "personas"]
+        self.assertEqual(personas, ["Top pains?", 'Your honest answer to "We use X"'])
         self.assertIn('e.g. "Priya"', voice[0]["help"])
         text = " ".join(q["question"] + q["help"] for q in result["questions"]).lower()
         for niche in ("video", "saas", "course", "creator", "solar"):  # works for any business
@@ -350,6 +354,38 @@ class IdeaSwapTests(unittest.TestCase):
             tags = _json.loads(conn.execute("SELECT tags FROM drafts WHERE id = ?", (saved["draft_id"],)).fetchone()[0])
         self.assertEqual(tags["opener"], "gap")
         self.assertEqual(tags["ask"], "interest")
+
+
+class WhatWorksTests(unittest.TestCase):
+    def test_reply_rates_count_people_only(self):
+        import json as _json
+        with db.connect() as conn:
+            conn.execute("DELETE FROM drafts WHERE status = 'sent' AND step = 1")
+        rows = [("works-a.com", "gap", "Would this help?", "replied", "reply", HUMAN_YES),
+                ("works-b.com", "gap", "Would this help?", "contacted", None, None),
+                ("works-c.com", "news", "Would a short call this week help?", "replied", "reply", OOO_DATES),  # stored before
+                ("works-d.com", "news", "Would a short call this week help?", "contacted", "auto", TICKET),
+                ("works-e.com", None, "Would a short call this week help?", "disqualified", "not_interested", "No thanks")]
+        for domain, opener, ask, status, kind, reply in rows:
+            contact, _ = db.upsert_contact(domain, first_name="P", email=f"p@{domain}")
+            draft = db.upsert_draft(contact["id"], 1, "s", f"Hi P,\n\nThe page has a gap. {ask}", "email", 0, {"ok": True})
+            with db.connect() as conn:
+                conn.execute("UPDATE drafts SET status = 'sent', sent_at = '2026-11-10T10:00:00+00:00', tags = ?, attach_deck = 1"
+                             " WHERE id = ?", (_json.dumps({"opener": opener}) if opener else None, draft["id"]))
+                conn.execute("UPDATE contacts SET status = ?, reply_kind = ?, last_reply = ? WHERE id = ?",
+                             (status, kind, reply, contact["id"]))
+        stats = db.email_stats()
+        self.assertEqual((stats["sent"], stats["replied"]), (5, 2))  # the out-of-office and the ticket don't count
+        opener = {c["value"]: c for c in stats["dimensions"]["opener"]}
+        self.assertEqual((opener["gap"]["sent"], opener["gap"]["replied"], opener["gap"]["rate"]), (2, 1, 0.5))
+        self.assertEqual(opener["news"]["replied"], 0)
+        self.assertEqual(opener["untagged"]["replied"], 1)  # "no thanks" is a person replying
+        self.assertEqual(opener["untagged"]["positive"], 0)
+        ask = {c["value"]: c for c in stats["dimensions"]["ask"]}
+        self.assertEqual((ask["interest"]["sent"], ask["call"]["sent"]), (2, 3))
+        self.assertFalse(ask["call"]["enough"])
+        self.assertEqual(stats["dimensions"]["month"][0]["value"], "2026-11")
+        self.assertIn("by_opener", db.results_so_far()["emails"])
 
 
 GOOD_DECK = [

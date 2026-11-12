@@ -86,8 +86,8 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
     "ALLOW_GUESSED_EMAILS": ("Email guessed addresses", "bool", "false",
                              "Also email addresses Leadsmith guessed, not just published ones."),
     "EMAIL_STYLE": ("Email style", "text", "idea_menu",
-                    "idea_menu: three ideas they pick from with one letter. personal_pitch: one specific compliment, "
-                    "what you do for buyers like theirs, a personal deck attached, and a short call ask."),
+                    "idea_menu: three ideas they pick from with one letter. personal_pitch: the gap you noticed, the "
+                    "exact offer, a personal deck attached, and the ask you chose."),
     "EMAIL_ASK": ("The ask", "text", "interest",
                   "How every first email ends. interest: asks if it's useful, the easiest yes. call: asks for a short "
                   "call. sample: offers to make the smallest first piece."),
