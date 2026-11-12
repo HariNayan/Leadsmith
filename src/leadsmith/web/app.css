@@ -419,6 +419,8 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .reply-pick svg { color: var(--violet); }
 .reply-pick.ok { color: var(--green); }
 .reply-pick.ok svg { color: var(--green); }
+.reply-pick.warn, .reply-pick.warn svg { color: var(--amber); }
+.reply-text.muted { color: var(--text-2); background: transparent; border-style: dashed; }
 
 .send-progress { padding: 12px 16px; margin-bottom: 16px; }
 .send-progress .meter { margin-top: 10px; }

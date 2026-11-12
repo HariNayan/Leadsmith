@@ -108,6 +108,8 @@ def _due(draft: dict[str, Any], conn) -> tuple[bool, str, dict[str, Any] | None]
     ))
     if not first or first["status"] != "sent" or not prev or prev["status"] != "sent" or not prev.get("sent_at"):
         return False, "previous step not sent yet", None
+    if contact.get("resume_after") and now.date().isoformat() < contact["resume_after"]:
+        return False, f"out of office: follow-up waits until {contact['resume_after']}", None
     due_at = follow_up_due_at(draft, first, prev, zone)
     if now < due_at:
         return False, f"follow-up waits until {schedule.describe(schedule.next_window_start(due_at, zone), zone)}", None
@@ -443,30 +445,108 @@ NOT_INTERESTED_RE = re.compile(
 BARE_NO = {"no", "nope", "stop", "unsubscribe", "remove", "no thanks", "no thank you"}
 
 
-def classify_reply(text: str, subject: str = "") -> str:
-    """'optout' (asked to stop: never email again), 'not_interested', or 'reply'."""
+# Automatic answers: out-of-office notes, support-desk tickets, "I get too much email" auto-replies. They aren't a
+# person answering, so they never count as a reply and never stop the follow-ups.
+AUTO_SUBJECT_RE = re.compile(
+    r"^\s*(?:\[?auto(?:matic)?[- ]?(?:reply|response|antwort)|autoreply|automatische antwort|out of (?:the )?office|"
+    r"ooo\b|away from|absence|abwesen|r[ée]ponse automatique|respuesta autom[aá]tica|risposta automatica|on leave|"
+    r"(?:on )?(?:vacation|holiday)\b)|\b(?:ticket|case|request)\s*(?:#|no\.?\s*|number\s*|id\s*)\d{3,}|"
+    r"\[#\d{3,}\]|\bticket\s+\d{3,}|we(?:'ve| have) received your", re.I)
+AUTO_BODY_RE = re.compile(
+    r"\b(?:this is an? automat(?:ic|ed)(?:ally generated)? (?:reply|response|message|e-?mail)|automatic reply|"
+    r"auto-?reply|out of (?:the )?office|"
+    r"i(?:'m| am) (?:currently )?(?:out of (?:the )?office|away from (?:my )?(?:desk|e-?mail|the office)|offline|"
+    r"on (?:annual |parental |maternity |paternity |sick )?leave|on (?:vacation|holiday)|travell?ing until)|"
+    r"(?:away|offline|out) (?:until|between)\b|limited access to (?:my )?e-?mail|"
+    r"(?:will|'ll) be back (?:at my desk|in the office|on)|(?:back|return) to (?:my desk|the office) on|"
+    r"(?:may|might) be (?:slow|delayed) (?:in )?respond|"
+    r"(?:a )?(?:support )?ticket (?:has been|was) (?:created|opened|raised|logged)|"
+    r"we(?:'ve| have) received your (?:request|message|e-?mail|enquiry|inquiry) and|"
+    r"(?:support|help ?desk) ticket|ticket (?:number|id|#)|do not reply to this (?:e-?mail|message)|"
+    r"this mailbox is (?:not|un)monitored)", re.I)
+
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"))}
+_MONTHS.update({m[:3]: n for m, n in list(_MONTHS.items())})
+_MONTHS["sept"] = 9
+_MONTH = r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?"
+_DATE_RES = (
+    re.compile(rf"\b(\d{{1,2}})(?:st|nd|rd|th)?(?:\s*[-–]\s*\d{{1,2}}(?:st|nd|rd|th)?)?\s+(?:of\s+)?{_MONTH}(?:,?\s+(\d{{4}}))?\b", re.I),
+    re.compile(rf"\b{_MONTH}\s+(\d{{1,2}})(?:st|nd|rd|th)?(?:,?\s+(\d{{4}}))?\b", re.I),
+)
+
+
+def return_date(text: str, today: Any = None) -> Any:
+    """The day someone who sent an out-of-office note is back: the latest date in the next 90 days that the note
+    mentions ("back on 16th November", "offline between 9 - 15 November", "until Nov 20"). None if it names none."""
+    from datetime import date
+
+    today = today or datetime.now().date()
+    found = []
+    for pattern in _DATE_RES:
+        for m in pattern.finditer(text or ""):
+            groups = m.groups()
+            day_s, month_s, year_s = (groups[0], groups[1], groups[2]) if pattern is _DATE_RES[0] else (groups[1], groups[0], groups[2])
+            month = _MONTHS.get(month_s.lower().rstrip("."))
+            if not month:
+                continue
+            year = int(year_s) if year_s else today.year
+            try:
+                when = date(year, month, int(day_s))
+            except ValueError:
+                continue
+            if not year_s and when < today - timedelta(days=7):
+                try:
+                    when = date(year + 1, month, int(day_s))  # "back on 3 January", written in December
+                except ValueError:
+                    continue
+            if today <= when <= today + timedelta(days=90):
+                found.append(when)
+    return max(found) if found else None
+
+
+def classify_reply(text: str, subject: str = "", auto_header: bool = False) -> str:
+    """'auto' (an out-of-office note, ticket or other automatic answer: the follow-ups carry on), 'optout' (asked to
+    stop: never email again), 'not_interested', or 'reply'."""
     body = (text or "").strip()
     bare = re.sub(r"[^a-z ]", "", body.lower()).strip()
-    if bare in BARE_NO or OPT_OUT_RE.search(body) or OPT_OUT_RE.search(subject or ""):
+    if auto_header or AUTO_SUBJECT_RE.search(subject or ""):
+        return "auto"
+    if bare in BARE_NO:
         return "optout" if bare not in ("no thanks", "no thank you") else "not_interested"
+    if AUTO_BODY_RE.search(body[:1500]):
+        return "auto"
+    if OPT_OUT_RE.search(body) or OPT_OUT_RE.search(subject or ""):
+        return "optout"
     if NOT_INTERESTED_RE.search(body):
         return "not_interested"
     return "reply"
 
 
-def _reply_headers(imap: imaplib.IMAP4_SSL, msg_id: bytes) -> tuple[str, str]:
-    """(subject, Message-ID) of a message, read without marking it as read."""
+def resume_date_for(text: str) -> str | None:
+    """When follow-ups to someone who sent an automatic answer may continue: the day after the return date their
+    note gives. None when it gives none (the follow-ups then keep their normal schedule)."""
+    back = return_date(text)
+    return (back + timedelta(days=1)).isoformat() if back else None
+
+
+def _reply_headers(imap: imaplib.IMAP4_SSL, msg_id: bytes) -> tuple[str, str, bool]:
+    """(subject, Message-ID, sent automatically?) of a message, read without marking it as read. Mail servers mark
+    out-of-office notes and auto-responders with Auto-Submitted, X-Autoreply or Precedence: auto_reply."""
     import email
     import email.header
 
     try:
-        status, parts = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID)])")
+        status, parts = imap.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT MESSAGE-ID AUTO-SUBMITTED X-AUTOREPLY "
+                                           "X-AUTORESPOND PRECEDENCE)])")
         raw = next((p[1] for p in parts if isinstance(p, tuple)), b"") if status == "OK" else b""
     except (imaplib.IMAP4.error, OSError):
-        return "", ""
+        return "", "", False
     headers = email.message_from_bytes(raw)
     subject = str(email.header.make_header(email.header.decode_header(headers.get("Subject", "")))) if headers.get("Subject") else ""
-    return subject, (headers.get("Message-ID") or "").strip()
+    auto = ((headers.get("Auto-Submitted") or "no").strip().lower() != "no" or bool(headers.get("X-Autoreply"))
+            or bool(headers.get("X-Autorespond")) or (headers.get("Precedence") or "").strip().lower() == "auto_reply")
+    return subject, (headers.get("Message-ID") or "").strip(), auto
 
 
 def _reply_text(imap: imaplib.IMAP4_SSL, msg_id: bytes) -> str:
@@ -614,11 +694,24 @@ def check_replies(days: int = 14) -> dict[str, Any]:
                 continue
             latest = found[-1]
             replier = next((a for a in (email_lower, *extras) if latest in by_sender.get(a, [])), email_lower)
-            reply_subject, reply_msgid = _reply_headers(imap, latest)
+            reply_subject, reply_msgid, auto_header = _reply_headers(imap, latest)
             if reply_msgid and reply_msgid == contact.get("last_reply_id"):
                 continue  # nothing new since we last looked
             reply_text = _reply_text(imap, latest)
-            reply_kind = classify_reply(reply_text, reply_subject)
+            reply_kind = classify_reply(reply_text, reply_subject, auto_header)
+            if reply_kind == "auto":
+                # Out of office, a ticket, an auto-responder: no person answered. The sequence carries on, after
+                # their return date when the note gives one.
+                resume = resume_date_for(reply_text)
+                with db.connect() as conn:
+                    conn.execute("UPDATE contacts SET last_reply = ?, reply_kind = 'auto', last_reply_id = ?, resume_after = ?,"
+                                 " updated_at = ? WHERE id = ?",
+                                 (reply_text[:2000] or reply_subject or None, reply_msgid or None, resume, db.now(), contact["id"]))
+                db.log_event("auto_reply", (f"automatic answer; follow-ups wait until {resume}" if resume
+                                            else "automatic answer; follow-ups continue"), contact["id"], contact["domain"])
+                replies.append({"contact_id": contact["id"], "email": contact["email"], "kind": "auto", "resume_after": resume,
+                                "name": f"{contact['first_name'] or ''} {contact['last_name'] or ''}".strip(), "picked": None})
+                continue
             with db.connect() as conn:
                 ideas = db.rows(conn.execute(
                     "SELECT id, letter, title FROM ideas WHERE domain = ? ORDER BY letter", (contact["domain"],)
@@ -652,7 +745,38 @@ def check_replies(days: int = 14) -> dict[str, Any]:
         except Exception:
             pass
     return {"replies": replies, "bounces": bounces, "checked": len(contacted),
-            "note": "Pending follow-ups for these contacts were cancelled. Read and answer the replies in Gmail."}
+            "note": "Pending follow-ups for people who answered were cancelled. Automatic answers (out of office, "
+                    "tickets) don't count: those follow-ups carry on. Read and answer the replies in Gmail."}
+
+
+def mark_reply(contact_id: int, kind: str) -> dict[str, Any]:
+    """Correct how a reply was read. 'auto': it was an automatic answer, so the sequence resumes: emails that were
+    cancelled when it arrived go back to Review (nothing is re-approved by itself). 'reply': it was a real person,
+    so the follow-ups stop."""
+    contact = db.get_contact(contact_id)
+    if not contact:
+        raise ValueError("Unknown person")
+    stamp = db.now()
+    with db.connect() as conn:
+        if kind == "auto":
+            if contact["status"] not in ("replied", "contacted"):
+                raise ValueError(f"This person is {contact['status']}, so their follow-ups can't resume.")
+            resume = resume_date_for(contact.get("last_reply") or "")
+            conn.execute("UPDATE contacts SET status = 'contacted', reply_kind = 'auto', reply_pick = NULL, resume_after = ?,"
+                         " updated_at = ? WHERE id = ?", (resume, stamp, contact_id))
+            back = conn.execute("UPDATE drafts SET status = 'draft', updated_at = ? WHERE contact_id = ? AND status = 'cancelled'"
+                                " AND sent_at IS NULL AND kind = 'sequence'", (stamp, contact_id)).rowcount
+            detail = f"marked as an automatic answer by you; {back} follow-up(s) back in Review"
+        elif kind == "reply":
+            conn.execute("UPDATE contacts SET status = 'replied', reply_kind = 'reply', resume_after = NULL, updated_at = ?"
+                         " WHERE id = ?", (stamp, contact_id))
+            back = conn.execute("UPDATE drafts SET status = 'cancelled', updated_at = ? WHERE contact_id = ?"
+                                " AND status IN ('draft', 'approved') AND kind = 'sequence'", (stamp, contact_id)).rowcount
+            detail = f"marked as a real reply by you; {back} follow-up(s) stopped"
+        else:
+            raise ValueError("kind must be auto or reply")
+    db.log_event("reply_marked", detail, contact_id, contact["domain"])
+    return {"contact_id": contact_id, "kind": kind, "changed": back}
 
 
 def test_login() -> str:

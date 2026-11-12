@@ -198,6 +198,7 @@ MIGRATIONS = {
     ("accounts", "fit_reason"): "ALTER TABLE accounts ADD COLUMN fit_reason TEXT",
     ("accounts", "brief"): "ALTER TABLE accounts ADD COLUMN brief TEXT",
     ("contacts", "extra_emails"): "ALTER TABLE contacts ADD COLUMN extra_emails TEXT",
+    ("contacts", "resume_after"): "ALTER TABLE contacts ADD COLUMN resume_after TEXT",
 }
 
 

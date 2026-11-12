@@ -445,7 +445,7 @@ async def outreach(request: Request) -> Response:
     with db.connect() as conn:
         rows = db.rows(conn.execute("""
             SELECT c.id, c.first_name, c.last_name, c.title, c.email, c.email_status, c.status, c.domain,
-                   c.last_reply, c.reply_pick, c.reply_kind, a.name AS company
+                   c.last_reply, c.reply_pick, c.reply_kind, c.resume_after, a.name AS company
             FROM contacts c LEFT JOIN accounts a ON a.domain = c.domain
             WHERE EXISTS (SELECT 1 FROM drafts d WHERE d.contact_id = c.id AND d.status IN ('approved', 'sent'))
                OR c.status IN ('contacted', 'replied', 'meeting', 'bounced')
@@ -462,6 +462,9 @@ async def outreach(request: Request) -> Response:
                     s["due"] = (datetime.fromisoformat(first_sent) + timedelta(days=s["send_after_days"] or 3)).date().isoformat()
             row["steps"] = steps
             row["last_sent"] = max((s["sent_at"] for s in steps if s["sent_at"]), default=None)
+            # Replies read before automatic answers were recognised: offer to resume the sequence.
+            row["looks_auto"] = (row["status"] == "replied" and row.get("reply_kind") in (None, "reply")
+                                 and bool(row.get("last_reply")) and mailer.classify_reply(row["last_reply"]) == "auto")
     return ok({"contacts": rows, "ideas": _ideas_by_domain({r["domain"] for r in rows}),
                "mail": mailer.mail_status(), "scheduler": _scheduler})
 
@@ -596,6 +599,12 @@ async def contact_back_to_review(request: Request) -> Response:
     if moved:
         db.log_event("back_to_review", f"{moved} approved email(s) moved back to review", contact_id)
     return ok({"moved": moved})
+
+
+async def contact_reply_kind(request: Request) -> Response:
+    """Correct how a reply was read: an automatic answer (the sequence resumes, via Review) or a real person."""
+    kind = str((await body(request)).get("kind") or "")
+    return ok(await asyncio.to_thread(mailer.mark_reply, int(request.path_params["id"]), kind))
 
 
 async def contact_status(request: Request) -> Response:
@@ -870,6 +879,7 @@ def create_app(port: int = 4600):
         Route("/api/contacts/{id:int}/recipients", _wrap(edit_contact_recipients), methods=["PUT"]),
         Route("/api/contacts/{id:int}/review", _wrap(contact_back_to_review), methods=["POST"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
+        Route("/api/contacts/{id:int}/reply-kind", _wrap(contact_reply_kind), methods=["POST"]),
         Route("/api/enhance", _wrap(enhance), methods=["POST"]),
         Route("/api/engines", _wrap(list_engines)),
         Route("/api/engines/connect", _wrap(connect_engine), methods=["POST"]),

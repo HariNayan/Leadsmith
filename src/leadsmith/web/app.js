@@ -1227,6 +1227,13 @@ PAGES.outreach = async () => {
     try { await startJob("reply", { contact_id: Number(b.dataset.draftReply) }); b.disabled = true; b.textContent = "Drafting…"; } catch (e) { fail(e); }
   }));
   $$("[data-review-contact]").forEach((a) => (a.onclick = () => { state.reviewTab = "draft"; state.reviewContact = Number(a.dataset.reviewContact); }));
+  $$("[data-reply-kind]").forEach((b) => (b.onclick = async () => {
+    try {
+      const r = await api(`/api/contacts/${b.dataset.replyContact}/reply-kind`, { method: "POST", body: { kind: b.dataset.replyKind } });
+      toast(r.kind === "auto" ? `Follow-ups resume: ${plural(r.changed, "email")} back in Review for you to approve.` : `Marked as a real reply. ${plural(r.changed, "follow-up")} stopped.`);
+      refreshOverview(); render();
+    } catch (e) { fail(e); }
+  }));
   $$("[data-back-review]").forEach((b) => (b.onclick = async () => {
     try {
       const id = Number(b.dataset.backReview);
@@ -1260,7 +1267,8 @@ PAGES.outreach = async () => {
     e.currentTarget.disabled = true;
     try {
       const r = await api("/api/replies", { method: "POST", body: {} });
-      toast(r.replies.length ? `${plural(r.replies.length, "new reply", "new replies")}: ${r.replies.map((x) => esc(x.name || x.email)).join(", ")}` : `No new replies${r.bounces?.length ? `. ${plural(r.bounces.length, "bounce")}` : ""}`);
+      const real = r.replies.filter((x) => x.kind !== "auto"), auto = r.replies.length - real.length;
+      toast(`${real.length ? `${plural(real.length, "new reply", "new replies")}: ${real.map((x) => esc(x.name || x.email)).join(", ")}` : "No new replies"}${auto ? `. ${plural(auto, "automatic answer")} (follow-ups carry on)` : ""}${r.bounces?.length ? `. ${plural(r.bounces.length, "bounce")}` : ""}`);
       refreshOverview(); render();
     } catch (err) { fail(err); }
   };
@@ -1299,6 +1307,12 @@ function replyBlock(c, ideas) {
   const guess = !picked && c.reply_pick ? ideas.find((i) => i.letter === c.reply_pick) : null;
   if (c.reply_kind === "optout") return `<div class="reply">${c.last_reply ? `<div class="reply-text">${icon("reply", "sm")}<span>${esc(c.last_reply.slice(0, 200))}</span></div>` : ""}<div class="reply-pick" style="color:var(--red)">${icon("ban", "sm")}Asked to stop: added to your do-not-contact list automatically.</div></div>`;
   if (c.reply_kind === "not_interested") return `<div class="reply">${c.last_reply ? `<div class="reply-text">${icon("reply", "sm")}<span>${esc(c.last_reply.slice(0, 200))}</span></div>` : ""}<div class="reply-pick">${icon("x", "sm")}Not interested: follow-ups stopped.</div></div>`;
+  if (c.reply_kind === "auto" && c.status !== "replied") return `<div class="reply">${c.last_reply ? `<div class="reply-text muted">${icon("clock", "sm")}<span>${esc(c.last_reply.slice(0, 160))}${c.last_reply.length > 160 ? "…" : ""}</span></div>` : ""}
+    <div class="reply-pick">${icon("info", "sm")}<span>Automatic answer (out of office or a ticket), not a person. Follow-ups ${c.resume_after ? `wait until <b>${esc(day(c.resume_after))}</b>` : "carry on"}.</span>
+      <button class="btn sm ghost" data-reply-kind="reply" data-reply-contact="${c.id}" title="It was a real person: stop the follow-ups">It's a real reply</button></div></div>`;
+  if (c.looks_auto) return `<div class="reply"><div class="reply-text muted">${icon("clock", "sm")}<span>${esc(c.last_reply.slice(0, 160))}${c.last_reply.length > 160 ? "…" : ""}</span></div>
+    <div class="reply-pick warn">${icon("alert", "sm")}<span>This looks like an automatic answer, so the follow-ups may have stopped too early.</span>
+      <button class="btn sm primary" data-reply-kind="auto" data-reply-contact="${c.id}" title="The unsent follow-ups go back to Review for you to approve">Resume follow-ups</button></div></div>`;
   const replyDraft = (c.steps || []).find((s) => s.kind === "reply" && s.status !== "sent" && s.status !== "cancelled");
   const draftBtn = c.last_reply && c.reply_kind !== "optout"
     ? (replyDraft ? `<a class="btn sm" href="#/review" data-review-contact="${c.id}">${icon("inbox", "sm")}Review your reply</a>`
