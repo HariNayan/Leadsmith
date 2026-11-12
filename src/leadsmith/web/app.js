@@ -64,8 +64,11 @@ async function api(path, { method = "GET", body } = {}) {
     method, headers: { "Content-Type": "application/json", "X-Leadsmith-Client": "1" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  let data = {};
-  try { data = await res.json(); } catch { /* non-JSON */ }
+  let data = {}, json = true;
+  try { data = await res.json(); } catch { json = false; }
+  // A 404 without Leadsmith's JSON error means the server doesn't know this route: it's running older code than
+  // this page (updated while the dashboard was open).
+  if (res.status === 404 && !json) throw new Error("The dashboard server is older than this page. Restart Leadsmith: close its terminal window, then start it again (Start Leadsmith.cmd or uv run leadsmith).");
   if (!res.ok || data.error) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
