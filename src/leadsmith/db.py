@@ -199,6 +199,7 @@ MIGRATIONS = {
     ("accounts", "brief"): "ALTER TABLE accounts ADD COLUMN brief TEXT",
     ("contacts", "extra_emails"): "ALTER TABLE contacts ADD COLUMN extra_emails TEXT",
     ("contacts", "resume_after"): "ALTER TABLE contacts ADD COLUMN resume_after TEXT",
+    ("drafts", "tags"): "ALTER TABLE drafts ADD COLUMN tags TEXT",
 }
 
 
@@ -742,6 +743,14 @@ def upsert_draft(contact_id: int, step: int, subject: str | None, body: str, cha
         return one(conn.execute("SELECT * FROM drafts WHERE id = ?", (draft_id,))) or {}
 
 
+def other_bodies(contact_id: int, step: int, channel: str = "email", limit: int = 150) -> list[str]:
+    """The same step's most recent emails to other people, to catch one email copied across many."""
+    with connect() as conn:
+        return [r[0] for r in conn.execute(
+            "SELECT body FROM drafts WHERE contact_id != ? AND step = ? AND channel = ? AND kind = 'sequence'"
+            " AND status != 'rejected' ORDER BY updated_at DESC LIMIT ?", (contact_id, step, channel, limit))]
+
+
 REPLY_STEP_BASE = 10  # replies are steps 10, 11, ... so they never collide with the sequence's 1-3
 
 
@@ -877,6 +886,14 @@ def save_ideas(domain: str, ideas: list[dict[str, Any]]) -> list[dict[str, Any]]
                 (domain, letter, title[:140], idea.get("pitch"), idea.get("why"), idea.get("format"), stamp, stamp),
             )
         return rows(conn.execute("SELECT id, letter, title, pitch, why, format, status FROM ideas WHERE domain = ? ORDER BY letter", (domain,)))
+
+
+def other_ideas(domain: str, limit: int = 300) -> list[dict[str, Any]]:
+    """Recent ideas offered to other companies, for the swap test."""
+    with connect() as conn:
+        return rows(conn.execute(
+            "SELECT i.domain, i.title, i.pitch, a.name FROM ideas i LEFT JOIN accounts a ON a.domain = i.domain"
+            " WHERE i.domain != ? ORDER BY i.id DESC LIMIT ?", (normalize_domain(domain), limit)))
 
 
 def pick_idea(idea_id: int, contact_id: int | None = None) -> dict[str, Any] | None:

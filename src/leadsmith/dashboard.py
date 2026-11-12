@@ -101,6 +101,14 @@ async def suggestions(request: Request) -> Response:
     return ok(suggest_searches())
 
 
+async def offer_check(request: Request) -> Response:
+    """Before a search: which offer it's for and whether the profile has proof for it."""
+    from .brain import offer_for, offers
+
+    text = str((await body(request)).get("text") or "")
+    return ok({**offer_for(text), "has_offers": offers()["has_offers"]})
+
+
 async def profile_questions(request: Request) -> Response:
     from .brain import profile_questions as questions
 
@@ -253,7 +261,8 @@ async def get_templates(request: Request) -> Response:
             sample = {"who": f"{contact.get('first_name') or contact.get('email')} at {account.get('name') or contact['domain']}",
                       "values": templates.values_for(contact, account, ideas)}
     return ok({"steps": templates.all_steps(), "placeholders": templates.PLACEHOLDERS, "sample": sample,
-               "style": (config.get("EMAIL_STYLE") or "idea_menu").strip(), "deck_pdf": bool(decks.find_browser())})
+               "style": (config.get("EMAIL_STYLE") or "idea_menu").strip(), "deck_pdf": bool(decks.find_browser()),
+               "ask": lint.ask_setting(), "asks": lint.ASKS})
 
 
 async def put_template(request: Request) -> Response:
@@ -769,6 +778,8 @@ async def put_settings(request: Request) -> Response:
                 raise ApiError(f"{config.SETTINGS[key][0]} must be a number.")
         if key == "EMAIL_STYLE" and value not in ("idea_menu", "personal_pitch"):
             raise ApiError("Email style must be idea_menu or personal_pitch.")
+        if key == "EMAIL_ASK" and value not in lint.ASKS:
+            raise ApiError(f"The ask must be one of: {', '.join(lint.ASKS)}.")
         if key == "AGENT_ENGINE":
             value = str(value).strip().lower()
             if value not in engines.ENGINES:
@@ -884,6 +895,7 @@ def create_app(port: int = 4600):
         Route("/api/brain/{name}", _wrap(put_brain), methods=["PUT"]),
         Route("/api/suggestions", _wrap(suggestions)),
         Route("/api/profile/questions", _wrap(profile_questions)),
+        Route("/api/profile/offer-check", _wrap(offer_check), methods=["POST"]),
         Route("/api/profile/proposals", _wrap(profile_proposals)),
         Route("/api/profile/proposals/{name}", _wrap(profile_proposal), methods=["POST", "DELETE"]),
         Route("/api/sources", _wrap(sources)),

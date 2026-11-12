@@ -212,5 +212,145 @@ class ProfileQuestionTests(unittest.TestCase):
             jobs._fmt("profile", {"answers": []})
 
 
+NOVEMBER = ("Hi Nicolas,\n\nAepsy’s careers page lists a Performance Marketing Manager and a Psychology Community Manager "
+            "in Zurich, signaling active work on acquisition and community growth.\n\nI’m Harinayan at Kernelhaus. We plan "
+            "creator campaigns and produce social videos and explainers that help people understand a service before they "
+            "use it.\n\nI’ve attached a 4-page deck with a clinically reviewable creator concept for choosing and booking a "
+            "psychologist.\n\nWould a short call this week help?")
+NOVEMBER_2 = ("Hi Karim,\n\nCerrion is expanding its marketing team, with Zurich roles in growth marketing.\n\nI’m Harinayan "
+              "at Kernelhaus. We plan creator campaigns and produce social videos and explainers for technical products."
+              "\n\nI’ve attached a 4-page deck with a creator-led detection-to-action story for Cerrion.\n\nWould a short call "
+              "this week help?")
+NOVEMBER_3 = ("Hi Manuel,\n\nEnact Intelligence emerged from stealth with $30M in pre-seed funding.\n\nI’m Harinayan at "
+              "Kernelhaus. We plan creator campaigns and produce product videos and explainers that make technical ideas "
+              "visible.\n\nI’ve attached a 4-page deck with a creator-led concept for Enact’s force-and-touch robotics."
+              "\n\nWould a short call this week help?")
+OCTOBER = ("Hi Kevin,\n\nKevin Powell's CSS Demystified ships Writing resilient CSS late November, and teams buying seats "
+           "decide before then.\n\nThe bulk licence page still sells seats from a checkout form, with no film of what a "
+           "team gets.\n\nKernelhaus makes product and explainer films, so buyers see the value before they ask for a "
+           "call.\n\nI've attached a 4-page deck for The Cascade with a 45-second plan.\n\nWould this help before the launch?")
+
+
+class EmailQualityTests(unittest.TestCase):
+    def issues(self, result):
+        return {(i["level"], i["rule"]) for i in result["issues"]}
+
+    def test_research_note_wording_fails(self):
+        from leadsmith import lint
+        found = self.issues(lint.check("Aepsy growth", NOVEMBER, 1, "Aepsy", "Nicolas", attached=True))
+        self.assertIn(("FAIL", "report-speak"), found)
+        self.assertIn(("WARN", "news-opener"), found)
+
+    def test_the_october_email_passes(self):
+        from leadsmith import lint
+        result = lint.check("Team licences before November", OCTOBER, 1, "Kevin Powell", "Kevin", attached=True,
+                            others=[NOVEMBER, NOVEMBER_2], ask="interest")
+        self.assertTrue(result["ok"], result["issues"])
+        self.assertNotIn("template", {i["rule"] for i in result["issues"]})
+
+    def test_copied_sentences_across_people(self):
+        from leadsmith import lint
+        result = lint.check("Enact robotics", NOVEMBER_3, 1, "Enact Intelligence", "Manuel", attached=True,
+                            others=[NOVEMBER_2, OCTOBER])
+        self.assertIn(("FAIL", "template"), self.issues(result))  # who-we-are and deck lines copied from Cerrion's
+        shared, total = lint.shared_sentences(NOVEMBER_3, [NOVEMBER_2])
+        self.assertGreaterEqual(len(shared), 3)
+        self.assertEqual(lint.shared_sentences(OCTOBER, [NOVEMBER_2])[0], [])
+
+    def test_follow_up_must_add_something(self):
+        from leadsmith import lint
+        follow = "Hi Kevin,\n\nThe bulk licence page still sells seats from a checkout form, with no film of what a team gets. Any thoughts?"
+        self.assertIn(("WARN", "repeats"), self.issues(lint.check(None, follow, 2, "Kevin Powell", "Kevin", first_email=OCTOBER)))
+
+    def test_greetings(self):
+        from leadsmith import lint
+        team = lint.check("x", "Hi Guardian Flame team,\n\nThe launch page has no video. Would this help?", 1, "Guardian Flame")
+        full = lint.check("x", "Hi Nicole Marguerite Gray,\n\nThe sales page lists 12 modules. Would this help?", 1, "Five to Nine", "Nicole")
+        self.assertIn(("WARN", "greeting"), self.issues(team))
+        self.assertIn(("WARN", "greeting"), self.issues(full))
+        fine = lint.check("x", "Hi Nicole,\n\nThe sales page lists 12 modules. Would this help?", 1, "Five to Nine", "Nicole")
+        self.assertNotIn(("WARN", "greeting"), self.issues(fine))
+
+    def test_the_ask(self):
+        from leadsmith import lint
+        self.assertEqual(lint.ask_kind(NOVEMBER), "call")
+        self.assertEqual(lint.ask_kind(OCTOBER), "interest")
+        self.assertEqual(lint.ask_kind("Want me to cut the first 30 seconds so you can see it?"), "sample")
+        self.assertIsNone(lint.ask_kind("No question here."))
+        self.assertIn(("WARN", "ask"), self.issues(lint.check("Aepsy", NOVEMBER, 1, "Aepsy", ask="interest")))
+        self.assertNotIn(("WARN", "ask"), self.issues(lint.check("Aepsy", NOVEMBER, 1, "Aepsy", ask="call")))
+
+
+class OfferProofTests(unittest.TestCase):
+    COMPANY = ("# Company & offer\n\n## Offers\n- Lead offer: Demo films\n\n### Offer 1: Demo films\n"
+               "- What the client gets: a 60-90 second product demo with script and storyboard\n"
+               "- Result for their customers: understand the product before a call\n"
+               "- Proof for this offer: Slashy (YC S25), two demo videos\n- Timeline: 2 weeks\n"
+               "- Smallest first project: a 30-second teaser\n\n### Offer 2: Creator campaigns\n"
+               "- What the client gets: creator shortlist, campaign plan, creator videos\n"
+               "- Result for their customers: hear about the product from creators they trust\n"
+               "- Proof for this offer: none yet\n- Timeline: 4 weeks\n- Smallest first project: a creator shortlist\n\n"
+               "## Proof\n- Slashy (YC S25): two demo videos\n")
+
+    def setUp(self):
+        from leadsmith import brain
+        self.brain = brain
+        config.ensure_home()
+        self.saved = brain.read_brain()["company"]["content"]
+        brain.write_brain("company", self.COMPANY)
+
+    def tearDown(self):
+        self.brain.write_brain("company", self.saved)
+
+    def test_offers_and_their_proof(self):
+        info = self.brain.offers()
+        self.assertEqual([o["name"] for o in info["offers"]], ["Demo films", "Creator campaigns"])
+        self.assertEqual(info["offers"][1]["proof"], None)  # "none yet"
+        self.assertEqual(self.brain.offer_for()["offer"], "Demo films")  # no brief: the lead offer
+        campaign = self.brain.offer_for("Find 10 startups interested in launching creator marketing campaigns on Instagram")
+        self.assertEqual(campaign["offer"], "Creator campaigns")
+        self.assertFalse(campaign["has_proof"])
+
+    def test_the_writer_is_told_what_it_may_claim(self):
+        from leadsmith import jobs
+        db.upsert_account("campaign-lead.com", name="Campaign Lead")
+        db.set_brief(["campaign-lead.com"], "Find startups that want creator campaigns with influencers")
+        line = jobs._offer_line(["campaign-lead.com"])
+        self.assertIn("Creator campaigns", line)
+        self.assertIn("NO proof", line)
+        db.upsert_account("demo-lead.com", name="Demo Lead")
+        line = jobs._offer_line(["demo-lead.com"])
+        self.assertIn("Slashy", line)
+        _, prompt = jobs._fmt("write", {"domains": ["campaign-lead.com"]})
+        self.assertIn("NO proof", prompt)
+
+
+class IdeaSwapTests(unittest.TestCase):
+    def test_an_idea_reused_for_another_company_is_flagged(self):
+        from leadsmith import server
+        db.upsert_account("first-co.com", name="First Co")
+        db.upsert_account("second-co.com", name="Second Co")
+        idea = {"title": "Creator-led short-form series", "pitch": "We plan the campaign, pick creators and shoot short videos",
+                "why": "hiring", "format": "6-8 videos"}
+        server.save_ideas("first-co.com", [idea])
+        result = server.save_ideas("second-co.com", [idea, {"title": "Animated walkthrough of the Second Co checkout",
+                                                            "pitch": "Two films of the checkout flow for the pricing page"}])
+        self.assertEqual(len(result["warnings"]), 1)
+        self.assertIn("first-co.com", result["warnings"][0])
+        self.assertIn("Swap test", result["hint"])
+
+    def test_first_emails_are_tagged(self):
+        import json as _json
+        from leadsmith import server
+        contact, _ = db.upsert_contact("tagged-co.com", first_name="Ada", email="ada@tagged-co.com", email_status="public")
+        db.upsert_account("tagged-co.com", name="Tagged Co")
+        saved = server.save_draft(contact["id"], 1, "Hi Ada,\n\nThe Tagged Co pricing page hides the product. Would a "
+                                  "walkthrough help?", subject="tagged co pricing", opener="gap")
+        with db.connect() as conn:
+            tags = _json.loads(conn.execute("SELECT tags FROM drafts WHERE id = ?", (saved["draft_id"],)).fetchone()[0])
+        self.assertEqual(tags["opener"], "gap")
+        self.assertEqual(tags["ask"], "interest")
+
+
 if __name__ == "__main__":
     unittest.main()

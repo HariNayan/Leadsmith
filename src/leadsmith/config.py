@@ -88,6 +88,9 @@ SETTINGS: dict[str, tuple[str, str, str, str]] = {
     "EMAIL_STYLE": ("Email style", "text", "idea_menu",
                     "idea_menu: three ideas they pick from with one letter. personal_pitch: one specific compliment, "
                     "what you do for buyers like theirs, a personal deck attached, and a short call ask."),
+    "EMAIL_ASK": ("The ask", "text", "interest",
+                  "How every first email ends. interest: asks if it's useful, the easiest yes. call: asks for a short "
+                  "call. sample: offers to make the smallest first piece."),
     "AGENT_ENGINE": ("Agent engine", "engine", "claude",
                      "The coding agent that runs the four agents: claude, codex, opencode or gemini."),
     "AGENT_MODEL": ("Model", "text", "", "Optional. Empty = the engine's own default model."),

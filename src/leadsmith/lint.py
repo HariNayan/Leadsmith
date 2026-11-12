@@ -41,6 +41,93 @@ ACRONYMS = {
     "REST", "GRPC", "LLM", "LLMS", "RFP", "RFPS", "ERP", "HRIS", "ATS", "UGC", "SMB", "SMBS", "NGO", "ESG",
 }
 
+# Research-note wording: it describes the prospect to a third party instead of talking to them.
+REPORT_SPEAK = [
+    "signaling", "signalling", "which signals", "this signals", "a timely opening", "timely opening", "a good moment to",
+    "a great moment to", "the perfect time to", "making this a good", "makes this a good",
+    "creating a timely", "clear story to tell", "positioned to benefit", "well-positioned", "per your careers page",
+]
+# Opening with news they already know (their own job ad, their own hiring) instead of what it means for them.
+NEWS_OPENER_RE = re.compile(
+    r"careers page|job (?:post|posting|listing|opening|ad)s?\b|\b(?:is|are) (?:actively )?hiring\b|"
+    r"\bis expanding (?:its|the)\b|\bhas (?:an )?open roles?\b|\blists (?:a|an|two|three|several|new)\b", re.I)
+GREETING_RE = re.compile(r"^\s*(?:hi|hey|hello|dear)\s+([^,\n]{1,60}),", re.I)
+
+ASKS = ("interest", "call", "sample")
+CALL_ASK_RE = re.compile(r"\b(?:call|chat|meeting|meet|zoom|calendar|book (?:a )?time|hop on|\d+[- ]?min(?:ute)?s?)\b", re.I)
+SAMPLE_ASK_RE = re.compile(r"\b(?:want me to|shall i|should i|happy to|can i|could i)\s+(?:make|send|draft|sketch|"
+                           r"put together|mock up|cut|write|record|build)\b|\bfree sample\b", re.I)
+
+
+def ask_setting() -> str:
+    from . import config  # local: the checks themselves need no settings
+
+    value = (config.get("EMAIL_ASK") or "interest").strip().lower()
+    return value if value in ASKS else "interest"
+
+
+def ask_kind(text: str) -> str | None:
+    """How an email ends: 'call', 'sample' (offers to make something), 'interest' (any other question), or None."""
+    questions = [s for s in re.split(r"(?<=[.!?])\s+|\n+", text or "") if s.strip().endswith("?")]
+    if not questions:
+        return None
+    last = questions[-1]
+    if CALL_ASK_RE.search(last):
+        return "call"
+    if SAMPLE_ASK_RE.search(last):
+        return "sample"
+    return "interest"
+
+
+def _sentences(text: str) -> list[str]:
+    lines = (text or "").strip().splitlines()
+    if lines and GREETING_RE.match(lines[0]):
+        lines = lines[1:]
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", "\n".join(lines)) if s.strip()]
+
+
+def _norm(sentence: str) -> str:
+    s = re.sub(r"\d+", "#", sentence.lower())
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z# ]", " ", s)).strip()
+
+
+def _overlap(a: list[str], b: list[str]) -> float:
+    """Share of the shorter sentence's words that the other has in the same order. A template sentence keeps its
+    skeleton when only the names change ("We plan creator campaigns and produce X videos for Y")."""
+    from difflib import SequenceMatcher
+
+    if not a or not b:
+        return 0.0
+    shorter = min(len(a), len(b))
+    if len(set(a) & set(b)) < 0.5 * min(len(set(a)), len(set(b))):  # cheap first cut: clearly different
+        return 0.0
+    matched = sum(block.size for block in SequenceMatcher(None, a, b, autojunk=False).get_matching_blocks())
+    return matched / shorter
+
+
+def shared_sentences(body: str, others: list[str], threshold: float = 0.7) -> tuple[list[str], int]:
+    """The sentences of `body` that (nearly) repeat sentences of the most similar other email, and how many
+    sentences `body` has that count. Short lines and the closing question are left out: those may repeat."""
+    mine = [s for s in _sentences(body) if len(s.split()) >= 4 and not s.endswith("?")]
+    if not mine or not others:
+        return [], len(mine)
+    mine_n = [_norm(s).split() for s in mine]
+    best: list[str] = []
+    for other in others:
+        theirs = [_norm(s).split() for s in _sentences(other) if len(s.split()) >= 4]
+        if not theirs:
+            continue
+        hits = []
+        for raw, a in zip(mine, mine_n):
+            if any(_overlap(a, b) >= threshold for b in theirs):
+                hits.append(raw)
+        if len(hits) > len(best):
+            best = hits
+            if len(best) == len(mine):
+                break
+    return best, len(mine)
+
+
 PLACEHOLDER_RE =re.compile(r"\{\{[^}]*\}\}|\{[a-z_][a-z0-9_]*\}|\[(?:first ?name|name|company|your name|insert[^\]]*)\]|<[A-Z_ ]{3,}>", re.I)
 
 
@@ -74,9 +161,13 @@ def claims_attachment(text: str) -> bool:
 
 def check(subject: str | None, body: str, step: int = 1, company: str | None = None,
           first_name: str | None = None, kind: str = "sequence", attached: bool | None = None,
-          style: str | None = None) -> dict[str, Any]:
+          style: str | None = None, others: list[str] | None = None, first_email: str | None = None,
+          ask: str | None = None) -> dict[str, Any]:
     """`attached`: whether a deck PDF really goes with this email (None = unknown, not checked).
-    `style`: the user's email style; in 'personal_pitch' a first email must not offer an A/B/C menu."""
+    `style`: the user's email style; in 'personal_pitch' a first email must not offer an A/B/C menu.
+    `others`: the same step's emails to other people, to catch copy-paste templates.
+    `first_email`: for a follow-up, email 1's body, so the follow-up adds something new.
+    `ask`: the user's ask setting (interest, call or sample)."""
     issues: list[dict[str, str]] = []
 
     def add(level: str, rule: str, message: str) -> None:
@@ -84,6 +175,58 @@ def check(subject: str | None, body: str, step: int = 1, company: str | None = N
 
     text = body or ""
     lower = text.lower()
+    _deliverability_checks(add, subject, text, lower, step, company, first_name, kind, attached, style)
+    if kind != "reply":
+        _craft_checks(add, text, lower, step, first_name, others, first_email, ask)
+    fails = sum(1 for i in issues if i["level"] == "FAIL")
+    return {"ok": fails == 0, "words": len(_words(text)), "fails": fails,
+            "warnings": len(issues) - fails, "issues": issues}
+
+
+def _craft_checks(add, text: str, lower: str, step: int, first_name: str | None, others: list[str] | None,
+                  first_email: str | None, ask: str | None) -> None:
+    """What makes a cold email read as written for one person: no research-note wording, no news repeated back,
+    a real greeting, not copied from other emails, follow-ups that add something, the chosen ask."""
+    cold = True
+    report = sorted({p for p in REPORT_SPEAK if p in lower})
+    if cold and report:
+        add("FAIL", "report-speak", f"Reads like a research note, not a person: {', '.join(report[:4])}. Say what you "
+                                    "noticed and what it means for them, in plain words.")
+    if cold and step == 1:
+        opening_line = next((s for s in _sentences(text) if s), "")
+        if NEWS_OPENER_RE.search(opening_line):
+            add("WARN", "news-opener", "Opens by repeating their own news (a job ad, hiring). They know it. Open with "
+                                       "the gap it reveals and what that costs them now.")
+    greeting = GREETING_RE.match(text)
+    if cold and greeting:
+        name = greeting.group(1).strip()
+        if re.search(r"\bteam\b|\ball\b|\bthere\b|\bfolks\b", name, re.I):
+            add("WARN", "greeting", f"\"{name}\" greets nobody, so it reads as bulk mail. Write to a named person.")
+        elif len(name.split()) >= 2 and (not first_name or name.lower() != first_name.strip().lower()):
+            add("WARN", "greeting", f"Greet by first name only (\"Hi {name.split()[0]},\"), not the full name.")
+    if cold and others:
+        shared, total = shared_sentences(text, others)
+        if len(shared) >= 3 and len(shared) >= 0.6 * total:
+            add("FAIL", "template", f"{len(shared)} of {total} sentences match another email almost word for word, "
+                                    f"e.g. \"{shared[0][:90]}\". Write this one for this person.")
+        elif len(shared) >= 2:
+            add("WARN", "template", f"{len(shared)} sentences match another email, e.g. \"{shared[0][:90]}\". Vary them.")
+    if cold and first_email and step > 1:
+        repeated, _ = shared_sentences(text, [first_email])
+        if repeated:
+            add("WARN", "repeats", f"Repeats email 1 (\"{repeated[0][:80]}\"). A follow-up should add something new: a "
+                                   "detail, a sample, the proof or a smaller first step.")
+    if cold and step == 1 and ask in ASKS:
+        actual = ask_kind(text)
+        if ask == "interest" and actual == "call":
+            add("WARN", "ask", "Asks for a call, but your ask is set to interest: ask if it's useful instead, the "
+                               "easiest yes for a stranger.")
+        elif ask == "sample" and actual not in ("sample", None):
+            add("WARN", "ask", "Your ask is set to sample: offer to make the smallest first piece for them.")
+
+
+def _deliverability_checks(add, subject: str | None, text: str, lower: str, step: int, company: str | None,
+                           first_name: str | None, kind: str, attached: bool | None, style: str | None) -> None:
     if style == "personal_pitch" and step == 1 and kind != "reply" and has_idea_menu(text):
         add("FAIL", "style", "Your email style is Personal pitch: no A/B/C options. Write one specific observation, "
                              "what you do for buyers like theirs, the deck line and one short ask.")
@@ -171,7 +314,3 @@ def check(subject: str | None, body: str, step: int = 1, company: str | None = N
     if step == 1 and kind != "reply" and company and not mentions_company(text + " " + (subject or ""), company):
         add("WARN", "generic", f"Doesn't mention {company} or anything specific to them, so it could go to anyone. "
                                "Name their product, launch or news.")
-
-    fails = sum(1 for i in issues if i["level"] == "FAIL")
-    return {"ok": fails == 0, "words": words, "fails": fails,
-            "warnings": len(issues) - fails, "issues": issues}

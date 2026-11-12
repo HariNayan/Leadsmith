@@ -35,6 +35,63 @@ def write_brain(name: str, content: str) -> Path:
     return path
 
 
+# ── offers and the proof behind each ────────────────────────────────────
+
+_STOP = {"the", "and", "for", "with", "that", "this", "our", "your", "their", "from", "into", "who", "are", "find",
+         "potential", "clients", "client", "startup", "startups", "companies", "company", "based", "help", "helps",
+         "interested", "launching", "through", "other", "platforms", "social", "services", "service", "offer"}
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z][a-z0-9-]{2,}", (text or "").lower()) if w not in _STOP}
+
+
+def offers() -> dict[str, object]:
+    """The offers written in company.md ('## Offers': a 'Lead offer:' line and one '### name' block each), with the
+    proof the user wrote for each. Proof that is missing, 'none yet' or a TODO counts as no proof."""
+    company = str(read_brain()["company"]["content"])
+    m = re.search(r"^##\s*Offers[^\n]*\n(.*?)(?=^##\s(?!#)|\Z)", company, re.M | re.S)
+    found: list[dict[str, object]] = []
+    lead = None
+    if m:
+        lead_m = re.search(r"^\s*-\s*Lead offer:\s*(.+)$", m.group(1), re.M | re.I)
+        lead = _clean(lead_m.group(1)) if lead_m else None
+        for block in re.split(r"^###\s*", m.group(1), flags=re.M)[1:]:
+            title, _, rest = block.partition("\n")
+            name = re.sub(r"^offer\s*\d+\s*[:.-]\s*", "", title.strip(), flags=re.I)
+            if not name or "TODO" in name:
+                continue
+            fields = {k.strip().lower(): v.strip() for k, v in re.findall(r"^\s*-\s*([^:\n]+):\s*(.*)$", rest, re.M)}
+            proof = fields.get("proof for this offer") or ""
+            no_proof = not proof or "TODO" in proof or bool(re.match(r"(?i)\s*(none|n/?a|no proof|-)\b", proof))
+            found.append({"name": name, "gets": _clean(fields.get("what the client gets")),
+                          "result": _clean(fields.get("result for their customers")),
+                          "proof": None if no_proof else proof, "first": _clean(fields.get("smallest first project"))})
+    proof_items = _section_items(company, "Proof")
+    return {"offers": found, "lead": lead, "has_offers": bool(found), "general_proof": proof_items}
+
+
+def offer_for(text: str | None = None) -> dict[str, object]:
+    """Which offer a search brief (or, without one, the profile's lead offer) is about, and whether there's proof for
+    it. Used to warn before a search and to tell the writer exactly what it may claim."""
+    info = offers()
+    found = info["offers"]
+    lead = next((o for o in found if info["lead"] and o["name"].lower() in str(info["lead"]).lower()), found[0] if found else None)
+    chosen = lead
+    if text and found:
+        brief = _words(text)
+        scored = sorted(((len(brief & _words(f"{o['name']} {o['gets'] or ''}")), i, o) for i, o in enumerate(found)),
+                        key=lambda t: (-t[0], t[1]))
+        if scored and scored[0][0] > 0:
+            chosen = scored[0][2]
+    if chosen:
+        return {"offer": chosen["name"], "proof": chosen["proof"], "has_proof": bool(chosen["proof"]),
+                "first": chosen["first"], "from_profile": True}
+    general = info["general_proof"]
+    return {"offer": None, "proof": "; ".join(general) if general else None, "has_proof": bool(general),
+            "first": None, "from_profile": False}
+
+
 # ── questions: the user answers in plain words, an agent drafts the profile, the user saves it ─────────
 
 FILE_LABELS = {"company": "Company & offer", "icp": "Ideal customer", "personas": "Personas", "voice": "Voice & rules"}

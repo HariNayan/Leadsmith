@@ -271,6 +271,31 @@ def _brief_line(domains: list[str]) -> str:
             "they were for the search.\n\n" + "\n\n".join(parts))
 
 
+def _offer_line(domains: list[str]) -> str:
+    """Which offer these accounts get and the proof the writer may cite for it, from company.md's Offers. When the
+    offer has no proof, the emails and decks claim none instead of borrowing proof from another service."""
+    from .brain import offer_for
+
+    if not domains:
+        return ""
+    with db.connect() as conn:
+        briefs = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT brief FROM accounts WHERE domain IN ({','.join('?' * len(domains))}) AND brief IS NOT NULL"
+            " AND brief != ''", domains)]
+    found = offer_for(briefs[0] if briefs else None)
+    if not found["offer"]:
+        return ""
+    line = f"\n\nTHE OFFER: {found['offer']} (from company.md's Offers). Name it exactly, as the deliverable."
+    if found["first"]:
+        line += f" Smallest first project: {found['first']}."
+    if found["has_proof"]:
+        line += f" Proof you may cite for it: {found['proof']}. Cite only this; proof for other offers doesn't count."
+    else:
+        line += (" There is NO proof for this offer in company.md: claim no clients, results or numbers for it, and "
+                 "never borrow proof from the user's other services. Sell the specific plan and the sample instead.")
+    return line
+
+
 def _style() -> str:
     style = (config.get("EMAIL_STYLE") or "idea_menu").strip()
     return style if style in DECK_SLIDES else "idea_menu"
@@ -313,7 +338,7 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
         "research_tail": ("stop: the decks and emails are made by the next steps of this task." if params.get("_chained")
                           else "outreach-writer to draft the 3-step sequence for every contact with an email."),
         "deck_note": DECK_NOTE if decks_wanted() else "",
-        "brief_line": _brief_line(domains),
+        "brief_line": _brief_line(domains) + _offer_line(domains),
         "need": params.get("need") or "", "have": params.get("have") or 0, "saved": params.get("saved") or "",
         "previous": (params.get("previous") or "(no summary)")[-1500:],
         "deck_slides": DECK_SLIDES[_style()],
@@ -336,7 +361,7 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
         values.update(person=person, company=acct.get("name") or contact["domain"], contact_id=contact["id"],
                       domain=contact["domain"], reply_text=contact["last_reply"][:1500],
                       picked_line=f"They picked idea {picked['letter']}) {picked['title']}.\n" if picked else "",
-                      brief_line=_brief_line([contact["domain"]]))
+                      brief_line=_brief_line([contact["domain"]]) + _offer_line([contact["domain"]]))
         return PROMPTS["reply"][0].format(**values), PROMPTS["reply"][1].format(**values)
     if kind == "rewrite":
         contact = db.get_contact(int(params.get("contact_id") or 0))
@@ -354,7 +379,7 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
         person = " ".join(p for p in (contact.get("first_name"), contact.get("last_name")) if p) or contact.get("email") or "this person"
         values.update(person=person, company=acct.get("name") or contact["domain"], contact_id=contact["id"],
                       domain=contact["domain"], steps=", ".join(f"step {n}" for n in unsent),
-                      brief_line=_brief_line([contact["domain"]]),
+                      brief_line=_brief_line([contact["domain"]]) + _offer_line([contact["domain"]]),
                       sent_line=(f"Step {', '.join(map(str, sent))} already went out, so the new emails are follow-ups in "
                                  "that same thread and must read naturally after it. ") if sent else "")
         return PROMPTS["rewrite"][0].format(**values), PROMPTS["rewrite"][1].format(**values)

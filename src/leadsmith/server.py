@@ -87,15 +87,19 @@ def brain_read() -> dict:
     style = (config.get("EMAIL_STYLE") or "idea_menu").strip()
     if style == "personal_pitch" and "voice" in result:
         result["voice"]["content"] = _voice_for_pitch(result["voice"]["content"])
+    ask = lint.ask_setting()
     result["email_style"] = {
         "style": style,
+        "ask": ask,
+        "ask_how": ASK_HOW[ask],
         "how_to_use": ("Write every first email as a PERSONAL PITCH, following the 'Style: personal pitch' section of the "
                        "outreach-writer playbook: build the account's deck first (save_deck), then save step 1 with "
                        "attach_deck=true. Never offer A/B/C options or a list of ideas in an email: one idea, made "
-                       "specific. Use voice.md for sender, tone and always/never rules only."
+                       "specific. Use voice.md for sender, tone and always/never rules only. The ask: see ask_how."
                        if style == "personal_pitch" else
                        "Write first emails as an IDEA MENU (three ideas, A/B/C), following the outreach-writer playbook. "
-                       "voice.md may still say 'Offer ideas: no' to use a classic sequence instead."),
+                       "voice.md may still say 'Offer ideas: no' to use a classic sequence instead. The ask is the "
+                       "'which one first?' question; ask_how applies to a classic sequence."),
     }
     custom = templates.customised()
     if custom:
@@ -108,10 +112,19 @@ def brain_read() -> dict:
     return result
 
 
+ASK_HOW = {
+    "interest": ("End with one easy question about whether it's useful to them, e.g. \"Would this help before the "
+                 "launch?\" or \"Is this worth a look for <Company>?\". Don't ask for a call: a stranger says yes to "
+                 "interest far more often than to a meeting."),
+    "call": "End with one short call ask, e.g. \"Would a short call this week help?\".",
+    "sample": ("End by offering to make the smallest first piece for them, e.g. \"Want me to cut the first 30 seconds "
+               "so you can see it on your page?\". Only offer what company.md's offer says you can deliver."),
+}
+
 PITCH_SEQUENCE = """## Sequence (set by Email style: Personal pitch + deck)
-- Step 1 (day 0): one specific, true observation about their product or news and why it matters now; one sentence on what we do for buyers like theirs; one line on the 4-page deck made for them (attached); one short ask ("Would a short call this week help?"). No A/B/C options. Under 90 words.
-- Step 2 (day 3): reply in the same thread with one concrete detail from the plan in the deck. One question. Under 70 words.
-- Step 3 (day 7): short, easy out: offer a smaller first step, or to step back. Under 45 words.
+- Step 1 (day 0): the gap you noticed on their site, product or channel and what it costs them now (not their own news repeated back); one line that fits the person (their role or something they said publicly); the exact offer for this gap, with one proof line only if company.md has proof for that offer; one line on the deck made for them (attached) naming the sample inside; the ask from email_style. No A/B/C options. Under 90 words.
+- Step 2 (day 3): reply in the same thread with one NEW thing: a concrete detail from the sample or plan, or the most relevant proof. Never restate email 1. One question. Under 70 words.
+- Step 3 (day 7): short, easy out: offer the smallest first project from company.md, or to step back. Under 45 words.
 """
 
 
@@ -531,8 +544,10 @@ def save_signal(domain: str, type: str, title: str, detail: str | None = None, u
 
     Args:
         domain: company domain
-        type: need (evidence of one of the ICP's buying signals: every new lead needs one, with its url), hiring,
-              funding, leadership_change, launch, expansion, tech_change, competitor, news, website, intent, other
+        type: need (evidence of one of the ICP's buying signals: every new lead needs one, with its url), gap (what's
+              missing or weak on their site, product or channel that the user's offer fixes: what the email opens
+              with), person (something a contact said or did publicly), hiring, funding, leadership_change, launch,
+              expansion, tech_change, competitor, news, website, intent, other
         title: short fact, e.g. "Hiring 3 SDRs"
         detail: supporting detail or quote
         url: source link
@@ -583,7 +598,8 @@ def render_step_template(contact_id: int, step: int) -> dict:
 @mcp.tool()
 def save_draft(contact_id: int, step: int, body: str, subject: str | None = None,
                channel: Literal["email", "linkedin"] = "email", send_after_days: int | None = None,
-               attach_deck: bool = False) -> dict:
+               attach_deck: bool = False,
+               opener: Literal["gap", "person", "news", "other"] | None = None) -> dict:
     """Save one step of a sequence for a contact as a draft for the user to review. Runs lint_email automatically.
 
     Args:
@@ -595,6 +611,8 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
         send_after_days: days after step 1 to send (default 0 / 3 / 7)
         attach_deck: attach the account's PDF deck (save_deck first; it must have rendered as a PDF). Only then may
                      the body say a deck is attached.
+        opener: step 1 only, how the email opens: gap (what's missing or weak), person (something about them),
+                news (their own news) or other. Used to learn which openings get replies.
     """
     contact = db.get_contact(contact_id)
     if not contact:
@@ -607,15 +625,24 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
         return {"error": "There's no PDF deck for this account to attach. Call save_deck first (and check it rendered "
                          "as a PDF), or save the email without attach_deck and without mentioning an attachment."}
     account = db.dossier(contact["domain"]) or {}
+    fixed = any(t["step"] == step and t["mode"] == "fixed" for t in templates.customised())
+    others, first_email = ([] if fixed else db.other_bodies(contact_id, step, channel)), None
+    if step > 1:
+        first_email = next((d["body"] for c in account.get("contacts", []) if c["id"] == contact_id
+                            for d in c["drafts"] if d["step"] == 1 and d["channel"] == channel), None)
     result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"), attached=bool(attach_deck),
-                        style=(config.get("EMAIL_STYLE") or "idea_menu").strip())
+                        style=(config.get("EMAIL_STYLE") or "idea_menu").strip(), others=others,
+                        first_email=first_email, ask=lint.ask_setting())
     delay = send_after_days if send_after_days is not None else {1: 0, 2: 3}.get(step, 7)
     try:
         draft = db.upsert_draft(contact_id, step, subject, body, channel, delay, result)
     except ValueError as exc:
         return {"error": str(exc)}
+    tags = {"opener": opener or "other", "ask": lint.ask_kind(body) or "none", "deck": bool(attach_deck),
+            "style": (config.get("EMAIL_STYLE") or "idea_menu").strip()} if step == 1 and channel == "email" else None
     with db.connect() as conn:
-        conn.execute("UPDATE drafts SET attach_deck = ? WHERE id = ?", (int(bool(attach_deck)), draft["id"]))
+        conn.execute("UPDATE drafts SET attach_deck = ?, tags = ? WHERE id = ?",
+                     (int(bool(attach_deck)), json.dumps(tags) if tags else None, draft["id"]))
     return {"draft_id": draft["id"], "status": draft["status"], "lint": result,
             "hint": "Fix every FAIL and re-save before showing it to the user." if not result["ok"] else None}
 
@@ -653,7 +680,47 @@ def save_ideas(domain: str, ideas: list[dict]) -> dict:
     if not ideas:
         return {"error": "ideas is empty"}
     saved = db.save_ideas(domain, ideas)
-    return {"ideas": saved, "hint": "Offer these in email 1 as 'A) … B) … C) …' and ask which one they'd like first."}
+    result: dict = {"ideas": saved, "hint": "Offer these in email 1 as 'A) … B) … C) …' and ask which one they'd like first."
+                    if (config.get("EMAIL_STYLE") or "idea_menu").strip() != "personal_pitch" else
+                    "Pitch the first one, made specific, in email 1 and the deck."}
+    reused = _reused_ideas(domain, saved)
+    if reused:
+        result["warnings"] = reused
+        result["hint"] = ("Swap test failed: an idea that fits another company unchanged isn't made for this one. Rewrite "
+                          "those so only this company could get them (their product, their audience, their gap), and "
+                          "save_ideas again.")
+    return result
+
+
+def _reused_ideas(domain: str, saved: list[dict]) -> list[str]:
+    """Ideas that are nearly the same as ones already offered to other companies (company names left out)."""
+    from difflib import SequenceMatcher
+
+    others = db.other_ideas(domain)
+    names = {domain.split(".")[0]} | {o["domain"].split(".")[0] for o in others}
+    account = db.dossier(domain) or {}
+    if account.get("name"):
+        names.add(account["name"].lower())
+
+    def norm(idea: dict) -> str:
+        text = f"{idea.get('title') or ''} {idea.get('pitch') or ''}".lower()
+        for name in names | {(o.get("name") or "").lower() for o in others}:
+            if name and len(name) >= 3:
+                text = text.replace(name, " ")
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", text)).strip()
+
+    found = []
+    for idea in saved:
+        if idea.get("status") == "picked":
+            continue
+        mine = norm(idea)
+        for other in others:
+            m = SequenceMatcher(None, mine, norm(other), autojunk=False)
+            if m.real_quick_ratio() >= 0.8 and m.quick_ratio() >= 0.8 and m.ratio() >= 0.8:
+                found.append(f"{idea['letter']}) \"{idea['title']}\" is nearly the same as the idea offered to "
+                             f"{other['domain']} (\"{other['title']}\").")
+                break
+    return found
 
 
 @mcp.tool()

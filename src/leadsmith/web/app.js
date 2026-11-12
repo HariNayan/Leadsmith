@@ -644,7 +644,7 @@ function fillTemplate(text, values) {
 }
 
 async function stepsPage() {
-  const { steps, placeholders, sample, style, deck_pdf } = await api("/api/templates");
+  const { steps, placeholders, sample, style, deck_pdf, ask } = await api("/api/templates");
   const values = sample ? sample.values : Object.fromEntries(Object.keys(placeholders).map((k) => [k, `[${k}]`]));
   setTop("card", "Business profile", "what every agent reads first", `<button class="btn primary" id="save-steps">Save</button>`);
   main.innerHTML = `
@@ -664,6 +664,14 @@ async function stepsPage() {
         </div>
         ${!deck_pdf ? `<p class="help" style="margin:10px 0 0">${icon("alert", "sm")} Personal pitch attaches a PDF deck, which needs Chrome or Edge installed. Without one, the writer leaves the deck line out.</p>` : ""}
         <p class="help" style="margin:10px 0 0">With personal pitch, the writer builds the deck before writing and attaches it; an email that says "attached" can't be approved or sent unless the deck really is.</p></div>
+      </div>
+      <div class="card" style="margin-bottom:14px">
+        <div class="card-head">${icon("reply", "sm")}The ask<span style="font-weight:400;color:var(--text-2);margin-left:6px">how every first email ends</span></div>
+        <div class="card-body"><div class="seg asks" role="radiogroup" aria-label="The ask">
+          ${[["interest", "Is it useful?", "Would this help before the launch?"], ["call", "A short call", "Would a short call this week help?"], ["sample", "Make the first piece", "Want me to make the first 30 seconds so you can see it?"]]
+            .map(([key, name, line]) => `<button type="button" data-ask="${key}" class="${ask === key ? "active" : ""}" aria-pressed="${ask === key}" title="${esc(line)}">${esc(name)}</button>`).join("")}
+        </div>
+        <p class="help" style="margin:10px 0 0" data-ask-line></p></div>
       </div>
       <div class="callout blue" style="margin-bottom:14px">${icon("info")}<div>For each step, let the AI write a fresh email (with an extra instruction if you like) or use <b>your own template</b>. Templates fill in the lead's details; any <code>{name}</code> that isn't listed below, like <code>{personal_line}</code>, is written by the AI as one sourced sentence. Signature and opt-out line are added at send time.</div></div>
       ${steps.map((t) => `
@@ -694,6 +702,21 @@ async function stepsPage() {
       $$(".style-opt").forEach((l) => l.classList.toggle("on", l.contains(r)));
       toast(r.value === "personal_pitch" ? "Personal pitch on: new drafts open with a compliment, a deck made for them and a call ask."
         : "Idea menu on: new drafts offer three ideas to pick from.");
+    } catch (e) { fail(e); }
+  }));
+  const ASK_NOTES = {
+    interest: "e.g. “Would this help before the launch?” The easiest yes for a stranger: data from 300,000+ cold emails shows interest asks book about twice as many meetings as asking for a call.",
+    call: "e.g. “Would a short call this week help?” A bigger ask for someone who doesn't know you yet.",
+    sample: "e.g. “Want me to make the first 30 seconds so you can see it?” Offers the smallest first project from your Offers.",
+  };
+  const askLine = (key) => { $("[data-ask-line]").textContent = ASK_NOTES[key] || ""; };
+  askLine(ask);
+  $$("[data-ask]").forEach((b) => (b.onclick = async () => {
+    try {
+      await api("/api/settings", { method: "PUT", body: { EMAIL_ASK: b.dataset.ask } });
+      $$("[data-ask]").forEach((x) => { x.classList.toggle("active", x === b); x.setAttribute("aria-pressed", x === b); });
+      askLine(b.dataset.ask);
+      toast("Saved. New first emails end with this ask.");
     } catch (e) { fail(e); }
   }));
   const preview = (card) => {
@@ -885,11 +908,26 @@ async function findBuyersModal() {
       <label class="field">Who are you looking for?<span class="help">${sug.suggestions.length ? "Pick a suggestion above, edit it, or write your own." : "Leave empty to use your business profile."}</span>
         <textarea id="f-focus" rows="3" placeholder="${esc(first || "Seed to Series A fintechs in India hiring their first sales rep")}">${esc(first)}</textarea>
         <span class="enhance-row"><button type="button" class="btn sm" id="f-enhance">${icon("zap", "sm")}Enhance</button><span class="help">Turns a short request into a precise brief from your business profile. Edit it before you start.</span></span></label>
+      <div id="f-proof"></div>
       <label class="field">Number of companies<input type="number" id="f-count" min="1" max="50" value="10" style="width:100px"></label>
       <div class="callout blue">${icon("info")}<div>Uses free sources picked for your kind of customer: startup sites (Wellfound, BetaList, Product Hunt, F6S, YC, Hacker News), job boards, news, YouTube, LinkedIn, local listings, company registers and web search. Nothing is sent.</div></div>`,
     onConfirm: async (root) => { await startJob("find_buyers", { count: Number($("#f-count", root).value) || 10, focus: $("#f-focus", root).value }); },
   });
   wireEnhance($("#f-enhance"), $("#f-focus"), () => $("#f-count").value);
+  // Which offer this search is for, and whether the profile has proof for it.
+  const checkProof = debounce(async () => {
+    const box = $("#f-proof");
+    if (!box) return;
+    try {
+      const r = await api("/api/profile/offer-check", { method: "POST", body: { text: $("#f-focus")?.value || "" } });
+      box.innerHTML = !r.has_offers ? `<div class="callout blue" style="margin-bottom:12px">${icon("info")}<div>Add your offers with <a href="#/business" data-close-modal>Answer questions</a> on Business profile, so Leadsmith knows which proof fits which offer.</div></div>`
+        : !r.has_proof ? `<div class="callout" style="margin-bottom:12px">${icon("alert")}<div><b>No proof for “${esc(r.offer)}” in your profile.</b> The emails will claim no clients or results for it and sell the plan instead. Add proof on <a href="#/business" data-close-modal>Business profile</a> to make them stronger.</div></div>`
+        : `<div class="help" style="margin:-4px 0 12px;font-size:12.5px;color:var(--text-2)">${icon("checkCircle", "sm")} Pitches <b>${esc(r.offer)}</b>, with this proof: ${esc(String(r.proof).slice(0, 140))}</div>`;
+      $$("[data-close-modal]", box).forEach((a) => (a.onclick = () => { $("#modal-root").innerHTML = ""; }));
+    } catch { box.innerHTML = ""; }
+  }, 400);
+  $("#f-focus").addEventListener("input", checkProof);
+  checkProof();
   const root = $("#modal-root");
   $$("[data-sugg]", root).forEach((b) => (b.onclick = () => {
     const box = $("#f-focus", root);
