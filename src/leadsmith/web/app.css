@@ -322,7 +322,29 @@ table.grid td.wrap { white-space: normal; min-width: 220px; max-width: 420px; co
 .callout { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; background: var(--amber-bg); border: 1px solid var(--amber-bd); color: var(--amber); font-size: 13px; }
 .callout.red { background: var(--red-bg); border-color: var(--red-bd); color: var(--red); }
 .callout.blue { background: var(--blue-bg); border-color: var(--blue-bd); color: var(--blue); }
+.callout.green { background: var(--green-bg); border-color: var(--green-bd); color: var(--green); }
 .callout svg { margin-top: 1px; }
+.callout .btn { flex: none; align-self: center; }
+.i.flip { transform: rotate(180deg); }
+
+/* ── profile questions and suggested changes ─────────── */
+.qa { display: grid; gap: 12px; }
+.qa-progress { display: grid; gap: 0; font-size: 12px; color: var(--text-2); }
+.qa-progress .meter { margin-top: 6px; }
+.qa-section { font-size: 12px; font-weight: 600; color: var(--amber); min-height: 0; }
+.qa-section:empty { display: none; }
+.qa-question { font-size: 15px; font-weight: 600; color: var(--text); }
+.qa-field textarea { min-height: 140px; font: inherit; line-height: 1.55; }
+.qa-nav { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.qa-nav .grow { flex: 1; }
+.proposal .card-head { flex-wrap: wrap; }
+.proposal-meta { font-weight: 400; color: var(--text-2); font-size: 12.5px; margin-left: 6px; }
+.diff { margin: 0; font: 12.5px/1.65 var(--mono); white-space: pre-wrap; word-break: break-word; max-height: 640px; overflow: auto; }
+.diff span { display: block; padding: 0 6px; border-radius: 3px; }
+.diff .ins { background: var(--green-bg); color: var(--green); }
+.diff .del { background: var(--red-bg); color: var(--red); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--red) 45%, transparent); }
+.proposal textarea { width: 100%; min-height: 360px; font: 12.5px/1.65 var(--mono); }
+@media (max-width: 640px) { .qa-nav [data-qa-kbd] { display: none; } }
 
 /* ── home ─────────────────────────────────────────── */
 .hello { padding: 28px 0 6px; }

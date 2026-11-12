@@ -52,6 +52,7 @@ const ICONS = {
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
   monitor: '<rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16.5V20"/>',
   copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/>',
+  edit: '<path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-4-4l-10 10z"/><path d="m13.5 6.5 4 4"/>',
 };
 const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 $$("[data-icon]").forEach((el) => (el.outerHTML = el.className ? `<span class="${el.className}">${icon(el.dataset.icon)}</span>` : icon(el.dataset.icon)));
@@ -377,7 +378,8 @@ async function refreshOverview() {
     const brainOk = Object.values(o.brain).every((b) => b.complete);
     $("#health").innerHTML = [
       `<a href="#/settings"><span class="dot ${c.connected ? "green" : "amber"}"></span>${c.connected ? `${esc(c.label)} connected` : "No agent connected"}</a>`,
-      `<a href="#/settings"><span class="dot ${o.mail.app_password_set ? (o.mail.send_enabled ? "green" : "amber") : "amber"}"></span>${o.mail.app_password_set ? (o.mail.send_enabled ? "Gmail connected · sending on" : "Gmail connected · sending paused") : "Gmail not connected"}</a>`,
+      o.mail.paused ? `<a href="#/outreach" title="${esc(o.mail.paused)}"><span class="dot red"></span>Sending paused: bounces</a>`
+        : `<a href="#/settings"><span class="dot ${o.mail.app_password_set ? (o.mail.send_enabled ? "green" : "amber") : "amber"}"></span>${o.mail.app_password_set ? (o.mail.send_enabled ? "Gmail connected · sending on" : "Gmail connected · sending paused") : "Gmail not connected"}</a>`,
       `<a href="#/business"><span class="dot ${brainOk ? "green" : "amber"}"></span>Profile ${brainOk ? "complete" : "incomplete"}</a>`,
       o.mail.test_recipient ? `<a href="#/settings" title="Every email goes to ${esc(o.mail.test_recipient)}"><span class="dot blue"></span>Test mode on</a>` : "",
     ].join("");
@@ -493,15 +495,20 @@ const BRAIN_TABS = [["company", "Company & offer", "building"], ["icp", "Ideal c
 PAGES.business = async () => {
   const tab = state.brainTab || "company";
   if (tab === "steps") return stepsPage();
-  const brain = await api("/api/brain");
+  const [brain, { proposals }] = await Promise.all([api("/api/brain"), api("/api/profile/proposals")]);
+  if (state.brainReview && proposals.length) return proposalsPage(proposals);
+  state.brainReview = false;
+  const todos = Object.values(brain).reduce((n, b) => n + (b.todos || 0), 0);
   setTop("card", "Business profile", "what every agent reads first", `
+    <button class="btn" id="ask-questions">${icon("sparkles")}Answer questions</button>
     <input type="text" id="site" placeholder="yourcompany.com" style="width:190px;height:32px" aria-label="Your website">
-    <button class="btn" id="autofill">${icon("sparkles")}Draft from website</button>
+    <button class="btn" id="autofill">${icon("globe")}Draft from website</button>
     <button class="btn primary" id="save-brain">Save</button>`);
   main.innerHTML = `
     ${brainTabs(tab, brain)}
     <div class="page" style="max-width:980px">
-      <div class="callout blue" style="margin-bottom:14px">${icon("info")}<div>Replace every <b>TODO</b> with real details. Agents quote your proof exactly and never invent their own.</div></div>
+      ${proposals.length ? `<div class="callout green" style="margin-bottom:14px">${icon("sparkles")}<div style="flex:1"><b>Suggested changes are ready</b> for ${proposals.map((p) => esc(p.label)).join(", ")}. Nothing is saved until you check them.</div><button class="btn sm primary" id="open-proposals">Review changes</button></div>` : ""}
+      <div class="callout blue" style="margin-bottom:14px">${icon("info")}<div>${todos ? `${plural(todos, "TODO")} left. <b>Answer questions</b> asks only what's missing and drafts the files for you to check, or replace each <b>TODO</b> here yourself.` : "Your profile is complete."} Agents quote your proof exactly and never invent their own.</div></div>
       <div class="card"><textarea id="brain-text" spellcheck="true" aria-label="${esc(tab)}" style="min-height:520px;border:0;box-shadow:none;font:13px/1.7 var(--mono);padding:18px 20px;border-radius:10px">${esc(brain[tab].content)}</textarea></div>
     </div>`;
   $$("[data-tab]").forEach((b) => (b.onclick = () => { state.brainTab = b.dataset.tab; render(); }));
@@ -517,7 +524,114 @@ PAGES.business = async () => {
     if (!website) { $("#site").focus(); return toast("Enter your website first.", "error"); }
     try { await startJob("autofill", { website }); } catch (e) { fail(e); }
   };
+  $("#ask-questions").onclick = () => profileQuestions().catch(fail);
+  if ($("#open-proposals")) $("#open-proposals").onclick = () => { state.brainReview = true; render(); };
 };
+
+// Answer questions: one at a time, in plain words. The answers go to an agent that suggests the profile files.
+async function profileQuestions() {
+  const { questions, missing } = await api("/api/profile/questions");
+  const all = [...questions, ...missing.map((m) => ({ ...m, optional: true }))];
+  const answers = (state.profileAnswers = state.profileAnswers || {});
+  let at = 0;
+  modal({
+    title: "Tell us what you offer", art: "sparkles", wide: true, confirm: "Fill my profile",
+    intro: "Answer in your own words; rough is fine. An agent turns your answers into your business profile, and you check every file before anything is saved.",
+    body: `<div class="qa">
+      <div class="qa-progress"><span data-qa-count></span><div class="meter"><i data-qa-meter></i></div></div>
+      <div data-qa-section class="qa-section"></div>
+      <label class="field qa-field"><span data-qa-question class="qa-question"></span><span data-qa-help class="help"></span>
+        <textarea data-qa-answer rows="6"></textarea></label>
+      <div class="qa-nav"><button type="button" class="btn sm" data-qa-back>${icon("chevron", "sm flip")}Back</button><span class="grow"></span>
+        <span class="help" data-qa-kbd>${isMac ? "⌘" : "Ctrl"}+Enter for next</span>
+        <button type="button" class="btn sm" data-qa-next>Next${icon("chevron", "sm")}</button></div>
+    </div>`,
+    onConfirm: async () => {
+      keep();
+      const list = all.filter((q) => (answers[q.id] || "").trim()).map((q) => ({
+        id: q.id, question: q.optional ? `${q.question} (${q.help}; the line to fill: ${q.line})` : q.question, answer: answers[q.id] }));
+      if (!list.length) throw new Error("Answer at least one question first.");
+      await startJob("profile", { answers: list });
+      state.profileAnswers = {};
+      toast("The agent is drafting your profile. When it's done, Review changes appears here.");
+    },
+  });
+  const root = $("#modal-root");
+  const box = $("[data-qa-answer]", root);
+  const keep = () => { answers[all[at].id] = box.value; };
+  const show = () => {
+    const q = all[at];
+    $("[data-qa-count]", root).textContent = `Question ${at + 1} of ${all.length}`;
+    $("[data-qa-meter]", root).style.width = `${Math.round(((at + 1) / all.length) * 100)}%`;
+    $("[data-qa-section]", root).textContent = q.optional ? "Still missing in your profile · optional" : "";
+    $("[data-qa-question]", root).textContent = q.question;
+    $("[data-qa-help]", root).textContent = q.optional ? q.help : q.help;
+    box.placeholder = q.placeholder || "Leave empty to skip";
+    box.value = answers[q.id] || "";
+    $("[data-qa-back]", root).disabled = at === 0;
+    $("[data-qa-next]", root).disabled = at === all.length - 1;
+    box.focus();
+  };
+  const go = (step) => { keep(); at = Math.max(0, Math.min(all.length - 1, at + step)); show(); };
+  $("[data-qa-back]", root).onclick = () => go(-1);
+  $("[data-qa-next]", root).onclick = () => go(1);
+  box.onkeydown = (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); if (at < all.length - 1) go(1); else $("[data-ok]", root).click(); } };
+  box.oninput = keep;
+  show();
+}
+
+// Line-level before/after, so the user sees exactly what the agent changed.
+function diffLines(before, after) {
+  const a = before.split("\n"), b = after.split("\n");
+  const n = a.length, m = b.length, dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { out.push([" ", a[i]]); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) out.push(["-", a[i++]]);
+    else out.push(["+", b[j++]]);
+  }
+  while (i < n) out.push(["-", a[i++]]);
+  while (j < m) out.push(["+", b[j++]]);
+  return out;
+}
+
+function proposalsPage(proposals) {
+  setTop("card", "Business profile", "suggested changes", `<button class="btn" id="back-profile">${icon("chevron", "sm flip")}Back to profile</button>`);
+  main.innerHTML = `<div class="page" style="max-width:1180px">
+    <div class="callout blue" style="margin-bottom:14px">${icon("info")}<div>Green lines are added and red lines are removed. Edit the suggestion if you like, then <b>Save</b> each file. Nothing changes until you do.</div></div>
+    ${proposals.map((p) => {
+      const lines = diffLines(p.before.trimEnd(), p.after.trimEnd());
+      const added = lines.filter((l) => l[0] === "+").length, removed = lines.filter((l) => l[0] === "-").length;
+      return `<div class="card proposal" data-file="${esc(p.file)}" style="margin-bottom:14px">
+        <div class="card-head">${icon("file", "sm")}${esc(p.label)}
+          <span class="proposal-meta">${p.unchanged ? "no changes" : `+${added} −${removed} lines`} · TODOs ${p.todos_before} → ${p.todos_after}</span>
+          <div class="actions"><button class="btn sm" data-p-edit>${icon("edit", "sm")}Edit</button><button class="btn sm" data-p-discard>Discard</button><button class="btn sm primary" data-p-save>${icon("check", "sm")}Save</button></div></div>
+        <div class="card-body">
+          <pre class="diff" data-p-diff>${lines.map(([k, t]) => `<span class="${k === "+" ? "ins" : k === "-" ? "del" : ""}">${k === " " ? "  " : k + " "}${esc(t)}</span>`).join("\n")}</pre>
+          <textarea data-p-text hidden spellcheck="true" aria-label="Suggested ${esc(p.label)}">${esc(p.after)}</textarea>
+        </div></div>`;
+    }).join("")}</div>`;
+  $("#back-profile").onclick = () => { state.brainReview = false; render(); };
+  $$(".proposal").forEach((card) => {
+    const file = card.dataset.file, text = $("[data-p-text]", card);
+    $("[data-p-edit]", card).onclick = () => {
+      text.hidden = !text.hidden; $("[data-p-diff]", card).hidden = !text.hidden;
+      if (!text.hidden) { text.style.height = `${Math.min(900, text.scrollHeight + 4)}px`; text.focus(); }
+    };
+    $("[data-p-save]", card).onclick = async () => {
+      try {
+        const r = await api(`/api/profile/proposals/${file}`, { method: "POST", body: { content: text.value } });
+        toast(r.complete ? "Saved. That file is complete." : "Saved. Some TODOs are still open.");
+        refreshOverview(); render();
+      } catch (e) { fail(e); }
+    };
+    $("[data-p-discard]", card).onclick = async () => {
+      try { await api(`/api/profile/proposals/${file}`, { method: "DELETE" }); toast("Suggestion discarded."); render(); } catch (e) { fail(e); }
+    };
+  });
+}
 
 function brainTabs(tab, brain) {
   return `<div class="tabs" role="tablist">${BRAIN_TABS.map(([k, label, ic]) => `<button role="tab" data-tab="${k}" class="${k === tab ? "active" : ""}" aria-selected="${k === tab}">${icon(ic, "sm")}${esc(label)}${!brain ? "" : brain[k].complete ? badge("done", "Done", false) : badge("guessed", `${brain[k].todos} to fill`, false)}</button>`).join("")}

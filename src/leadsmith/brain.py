@@ -35,6 +35,120 @@ def write_brain(name: str, content: str) -> Path:
     return path
 
 
+# ── questions: the user answers in plain words, an agent drafts the profile, the user saves it ─────────
+
+FILE_LABELS = {"company": "Company & offer", "icp": "Ideal customer", "personas": "Personas", "voice": "Voice & rules"}
+
+# Asked every time, in this order. Written for any business: no industry in them.
+CORE_QUESTIONS = [
+    {"id": "lead_offer", "question": "What do you want to sell in your outreach right now?",
+     "help": "If you offer several things, say which one leads. Every email pitches this first.",
+     "placeholder": "e.g. Our main offer is X for Y. Z is an add-on we only mention if it fits."},
+    {"id": "offers", "question": "For each thing you sell: what does the client get, what changes for their customers, "
+                                 "how long does it take, and what's the smallest first project?",
+     "help": "One paragraph per offer. Rough is fine.",
+     "placeholder": "e.g. X: they get ..., so their customers ... Takes 2 weeks. Smallest first project: ..."},
+    {"id": "proof", "question": "Which past clients, results or work can emails mention?",
+     "help": "Names, numbers, links. Emails quote these exactly and never invent others, so anything you leave out "
+             "is never mentioned. Say which offer each one proves.",
+     "placeholder": "e.g. Client A (offer X): result in numbers. Client B (offer Y): what we made, link."},
+    {"id": "who", "question": "Who is it for?",
+     "help": "The kind of company, its size, where it is, and what it's doing when it needs you (launching, hiring, "
+             "raising money, opening a location...).",
+     "placeholder": "e.g. 5-50 person companies in the UK and US that just launched and have no ..."},
+    {"id": "decider", "question": "Who do you write to?",
+     "help": "The job title of the person who decides, and what they care about most.",
+     "placeholder": "e.g. The founder at small companies, the head of marketing at bigger ones. They care about ..."},
+    {"id": "voice", "question": "How should your emails sound?",
+     "help": "Your name and sign-off, words you never want used, and one email you'd be happy to send (or one that "
+             "got a reply).",
+     "placeholder": "e.g. Sign as Sam. Never say 'synergy'. An email that worked: ..."},
+]
+
+
+def _todo_question(line: str) -> tuple[str, str] | None:
+    """('Sign-off', 'e.g. "Priya"') from a template line like '- Sign-off: TODO (e.g. "Priya")'."""
+    text = re.sub(r"<!--.*?-->", "", line).strip().lstrip("-*0123456789. ").strip()
+    if "TODO" not in text:
+        return None
+    label, _, rest = text.partition(":")
+    if "TODO" in label:  # "- TODO e.g. Fewer than 5 employees": no label, the hint is the question
+        hint = re.sub(r"^TODO\s*", "", label).strip(" .")
+        return (hint, "") if hint else None
+    hint = re.sub(r"^\s*TODO\s*", "", rest).strip(" ()")
+    return label.strip(), hint
+
+
+def profile_questions() -> dict[str, object]:
+    """The core questions, plus one short question per TODO still open in the profile."""
+    missing, seen = [], set()
+    for name, info in read_brain().items():
+        section = ""
+        for line in str(info["content"]).splitlines():
+            if line.startswith("#"):
+                section = line.lstrip("# ").strip()
+                continue
+            found = _todo_question(line)
+            if not found:
+                continue
+            label, hint = found
+            key = (name, label.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            missing.append({"id": f"todo:{name}:{len(missing)}", "file": name,
+                            "question": label[:1].upper() + label[1:].rstrip("?:") + "?",
+                            "help": f"{FILE_LABELS[name]} · {section}" + (f" · {hint}" if hint else ""),
+                            "line": line.strip()})
+    return {"questions": CORE_QUESTIONS, "missing": missing}
+
+
+def _proposal_path(name: str) -> Path:
+    _path(name)  # validates the name
+    return config.BRAIN_DIR / ".proposed" / f"{name}.md"
+
+
+def propose(name: str, content: str) -> Path:
+    """Save an agent's suggested version of one profile file. The real file only changes when the user saves it."""
+    if not (content or "").strip():
+        raise ValueError("The suggested file is empty.")
+    path = _proposal_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.strip() + "\n", encoding="utf-8")
+    return path
+
+
+def proposals() -> list[dict[str, object]]:
+    current = read_brain()
+    out = []
+    for name in BRAIN_FILES:
+        path = _proposal_path(name)
+        if path.exists():
+            after = path.read_text(encoding="utf-8")
+            before = str(current[name]["content"])
+            out.append({"file": name, "label": FILE_LABELS[name], "before": before, "after": after,
+                        "todos_before": before.count("TODO"), "todos_after": after.count("TODO"),
+                        "unchanged": before.strip() == after.strip()})
+    return out
+
+
+def accept_proposal(name: str, content: str | None = None) -> dict[str, object]:
+    """The user's Save: the (possibly edited) suggestion becomes the profile file."""
+    path = _proposal_path(name)
+    if content is None:
+        if not path.exists():
+            raise ValueError("There's no suggestion for this file.")
+        content = path.read_text(encoding="utf-8")
+    write_brain(name, content)
+    path.unlink(missing_ok=True)
+    return {"saved": name, "complete": read_brain()[name]["complete"]}
+
+
+def discard_proposal(name: str) -> dict[str, object]:
+    _proposal_path(name).unlink(missing_ok=True)
+    return {"discarded": name}
+
+
 # ── search suggestions ──────────────────────────────────────────────────
 
 def _clean(value: str | None) -> str | None:

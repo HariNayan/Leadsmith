@@ -101,6 +101,30 @@ async def suggestions(request: Request) -> Response:
     return ok(suggest_searches())
 
 
+async def profile_questions(request: Request) -> Response:
+    from .brain import profile_questions as questions
+
+    return ok(questions())
+
+
+async def profile_proposals(request: Request) -> Response:
+    from .brain import proposals
+
+    return ok({"proposals": proposals()})
+
+
+async def profile_proposal(request: Request) -> Response:
+    from .brain import accept_proposal, discard_proposal
+
+    name = request.path_params["name"]
+    if name not in BRAIN_FILES:
+        raise ApiError("Unknown brain file", 404)
+    if request.method == "DELETE":
+        return ok(discard_proposal(name))
+    content = (await body(request)).get("content")
+    return ok(accept_proposal(name, content if isinstance(content, str) and content.strip() else None))
+
+
 async def put_brain(request: Request) -> Response:
     name = request.path_params["name"]
     if name not in BRAIN_FILES:
@@ -859,6 +883,9 @@ def create_app(port: int = 4600):
         Route("/api/brain", _wrap(get_brain)),
         Route("/api/brain/{name}", _wrap(put_brain), methods=["PUT"]),
         Route("/api/suggestions", _wrap(suggestions)),
+        Route("/api/profile/questions", _wrap(profile_questions)),
+        Route("/api/profile/proposals", _wrap(profile_proposals)),
+        Route("/api/profile/proposals/{name}", _wrap(profile_proposal), methods=["POST", "DELETE"]),
         Route("/api/sources", _wrap(sources)),
         Route("/api/templates", _wrap(get_templates)),
         Route("/api/templates/{step}", _wrap(put_template), methods=["PUT"]),

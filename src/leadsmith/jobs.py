@@ -185,8 +185,42 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "brain_write, keeping each template's headings. Use only facts you found; where something isn't knowable "
         "(real results, banned words, sender name), leave the TODO line so the user fills it in.{extra}",
     ),
+    "profile": (
+        "Fill business profile from your answers",
+        "The user answered questions about their business. Turn the answers into their business profile.\n"
+        "Their answers:\n---\n{answers}\n---\n"
+        "First call brain_read. Then, for each of company, icp, personas and voice that the answers change, call "
+        "brain_propose(file, content) once with the COMPLETE new file. The user compares it with the current file "
+        "and saves it themselves, so never call brain_write.\n"
+        "How to write each file:\n"
+        "- Keep the file's headings and every line the answers don't touch. Replace a TODO line only with what the "
+        "user said; where an answer is missing, leave the TODO.\n"
+        "- company.md gets a '## Offers' section (above '## Proof'): a first line '- Lead offer: <name>' for the "
+        "offer the user wants to sell first, then one '### <offer name>' block per offer with exactly these lines: "
+        "'- What the client gets:', '- Result for their customers:', '- Proof for this offer:', '- Timeline:', "
+        "'- Smallest first project:'. 'Proof for this offer' names only proof the user gave for that offer, or says "
+        "'none yet'. Update '## What we sell' to match.\n"
+        "- Real results, client names and links go under '## Proof', exactly as the user wrote them.\n"
+        "- The ideal customer goes in icp.md, the people to write to in personas.md, sender, sign-off, banned words "
+        "and example emails in voice.md (an example email under '## Emails that worked for us').\n"
+        "- Use only what the user wrote or what's already in the file. Never invent results, prices, names, numbers "
+        "or clients. Keep their wording for facts; tidy only the grammar.\n"
+        "Finish with one line per file: what you filled and which TODOs are still open.",
+    ),
     "custom": ("{title}", "{prompt}"),
 }
+
+
+def _answers_text(answers: Any) -> str:
+    """The user's answers as 'Q: ... / A: ...' blocks, skipping blank ones."""
+    out = []
+    for item in answers if isinstance(answers, list) else []:
+        if not isinstance(item, dict):
+            continue
+        answer = str(item.get("answer") or "").strip()
+        if answer:
+            out.append(f"Q: {str(item.get('question') or '').strip()}\nA: {answer[:3000]}")
+    return "\n\n".join(out)
 
 
 DECK_NOTE = ("\nDecks are built by a separate deck step (on the deck engine), not by you: never call save_deck. "
@@ -324,6 +358,10 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
                       sent_line=(f"Step {', '.join(map(str, sent))} already went out, so the new emails are follow-ups in "
                                  "that same thread and must read naturally after it. ") if sent else "")
         return PROMPTS["rewrite"][0].format(**values), PROMPTS["rewrite"][1].format(**values)
+    if kind == "profile":
+        values["answers"] = _answers_text(params.get("answers"))
+        if not values["answers"]:
+            raise ValueError("Answer at least one question first.")
     if kind == "autofill" and not values["website"]:
         raise ValueError("Enter your website.")
     if kind == "custom" and not values["prompt"].strip():
@@ -342,7 +380,8 @@ def _run(job_id: int, kind: str, prompt: str, engine: engines.Engine, session: d
     `session` is the connection's shared conversation: {"session_id": ...}. The run continues it when it has an
     id, and records the id the engine reports, so the next run in this connection continues the same conversation."""
     resume = (session or {}).get("session_id")
-    scope = "deck" if kind == "deck" else ""  # a deck run only gets the deck tools, and no web search
+    # A deck run only gets the deck tools, and no web search. A profile run can only suggest profile files.
+    scope = kind if kind in ("deck", "profile") else ""
     scoped = {"scope": scope} if scope else {}
     try:
         cmd, extra_env = engine.command(engines.model_for(engine) if model is None else model, resume, **scoped)

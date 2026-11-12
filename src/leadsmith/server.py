@@ -18,7 +18,7 @@ from mcp_types import TextContent
 
 from . import compliance, config, db, lint, mailer, schedule, templates
 from .brain import read_brain, write_brain
-from . import decks
+from . import brain, decks
 from .providers import emails, hn, news, places, registries, startups, website, yc, youtube
 from .providers.base import ProviderError
 
@@ -125,6 +125,23 @@ def _voice_for_pitch(voice: str) -> str:
     swapped = _re.sub(r"^(\s*-\s*Offer ideas:).*$", r"\1 no (Email style is Personal pitch: no A/B/C options)", swapped, flags=_re.M | _re.I)
     return _re.sub(r"^(\s*-\s*4-page PDF deck per account:).*$", r"\1 yes (built for every account and attached to email 1)",
                    swapped, flags=_re.M | _re.I)
+
+
+@mcp.tool()
+def brain_propose(file: Literal["company", "icp", "personas", "voice"], content: str) -> dict:
+    """Suggest a new version of one business-profile file. The user sees it next to the current file in the
+    dashboard and saves or discards it: nothing changes until they click Save. Write the whole file.
+
+    Args:
+        file: which file
+        content: the complete new markdown for that file
+    """
+    try:
+        brain.propose(file, content)
+    except ValueError as exc:
+        return {"error": str(exc)}
+    return {"proposed": file, "todos_left": content.count("TODO"),
+            "hint": "Saved as a suggestion for the user to review. Do the other files the answers change, then stop."}
 
 
 @mcp.tool()
@@ -808,6 +825,8 @@ SCOPES = {
     # A deck run reads what's saved and writes ideas and the deck: nothing else (no contacts, accounts or emails).
     "deck": {"leadsmith_status", "brain_read", "get_account", "list_pipeline", "save_ideas", "save_deck",
              "quality_check"},
+    # Filling the profile from the user's answers: it can only suggest files, which the user reviews and saves.
+    "profile": {"leadsmith_status", "brain_read", "brain_propose"},
 }
 
 

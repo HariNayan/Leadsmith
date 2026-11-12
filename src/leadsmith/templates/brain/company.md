@@ -14,6 +14,18 @@
 - What changes for the customer after buying: TODO
 - Price range / how it's sold: TODO
 
+## Offers
+<!-- One block per thing you sell. The writer picks the one that fits each lead and names it exactly.
+     "Proof for this offer" decides what an email may claim: "none yet" means it claims nothing. -->
+- Lead offer: TODO (the one every email pitches first)
+
+### Offer 1: TODO name
+- What the client gets: TODO
+- Result for their customers: TODO
+- Proof for this offer: TODO (a client or result from Proof below, or "none yet")
+- Timeline: TODO
+- Smallest first project: TODO
+
 ## Proof
 <!-- Real results only. Agents may quote these; they must never invent others. -->
 - TODO Customer A: result in numbers

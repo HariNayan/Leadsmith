@@ -161,5 +161,56 @@ class SendingSafetyTests(unittest.TestCase):
         self.assertEqual(mailer.bounce_health()["sent"], 1)
 
 
+class ProfileQuestionTests(unittest.TestCase):
+    def setUp(self):
+        from leadsmith import brain
+        self.brain = brain
+        config.ensure_home()
+        self.saved = {n: i["content"] for n, i in brain.read_brain().items()}
+
+    def tearDown(self):
+        for name, content in self.saved.items():
+            self.brain.write_brain(name, content)
+            self.brain.discard_proposal(name)
+
+    def test_core_questions_then_one_per_open_todo(self):
+        self.brain.write_brain("voice", "# Voice\n\n## Sender\n- Name: Sam\n- Sign-off: TODO (e.g. \"Priya\")\n\n## Never\n- TODO add your own banned words\n")
+        result = self.brain.profile_questions()
+        self.assertEqual([q["id"] for q in result["questions"]][:3], ["lead_offer", "offers", "proof"])
+        voice = [m for m in result["missing"] if m["file"] == "voice"]
+        self.assertEqual([m["question"] for m in voice], ["Sign-off?", "Add your own banned words?"])
+        self.assertIn('e.g. "Priya"', voice[0]["help"])
+        text = " ".join(q["question"] + q["help"] for q in result["questions"]).lower()
+        for niche in ("video", "saas", "course", "creator", "solar"):  # works for any business
+            self.assertNotIn(niche, text)
+
+    def test_suggestions_change_nothing_until_saved(self):
+        before = self.brain.read_brain()["company"]["content"]
+        self.brain.propose("company", "# Company & offer\n\n## Offers\n- Lead offer: Audits\n")
+        self.assertEqual(self.brain.read_brain()["company"]["content"], before)
+        found = self.brain.proposals()
+        self.assertEqual([p["file"] for p in found], ["company"])
+        self.assertIn("Lead offer: Audits", found[0]["after"])
+        self.brain.accept_proposal("company", found[0]["after"] + "- Edited by me\n")
+        self.assertIn("Edited by me", self.brain.read_brain()["company"]["content"])
+        self.assertEqual(self.brain.proposals(), [])
+        self.brain.propose("voice", "# Voice\n")
+        self.brain.discard_proposal("voice")
+        self.assertEqual(self.brain.proposals(), [])
+
+    def test_profile_run_only_suggests(self):
+        from leadsmith import jobs, server
+        title, prompt = jobs._fmt("profile", {"answers": [
+            {"question": "What do you want to sell?", "answer": "Audits first, retainers later"},
+            {"question": "Who is it for?", "answer": "  "}]})
+        self.assertIn("Audits first, retainers later", prompt)
+        self.assertNotIn("Who is it for?", prompt)  # blank answers are skipped
+        self.assertIn("brain_propose", prompt)
+        self.assertIn("never call brain_write", prompt)
+        self.assertEqual(server.SCOPES["profile"], {"leadsmith_status", "brain_read", "brain_propose"})
+        with self.assertRaises(ValueError):
+            jobs._fmt("profile", {"answers": []})
+
+
 if __name__ == "__main__":
     unittest.main()
