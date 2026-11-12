@@ -58,21 +58,23 @@ Which one should I make first: A, B or C?
 
 "B" is the easiest reply anyone can send, and it tells you exactly what to build.
 
-Prefer a classic, personal note? Switch **Business profile → Email steps → Email style** to **Personal pitch + deck**. The writer opens with one specific, true observation, says what you do for buyers like theirs, builds a 4-page PDF deck made for that company and attaches it, then asks for a short call:
+Prefer a classic, personal note? Switch **Business profile → Email steps → Email style** to **Personal pitch + deck**. The writer opens with the gap it found on their site (not their own news repeated back), names the exact offer, cites proof only if your profile has proof for that offer, attaches a deck made for that company with a sample of the work inside, and ends with the ask you chose:
 
 ```
 Subject: Kestrel trail shoe, before the spring drop
 
 Hi Dana,
 
-The new Kestrel trail shoe looks great, and the weeks before a drop are when product video does the most work.
+The Kestrel trail shoe page shows six still photos, and grip is the one thing a photo can't show. With the drop three weeks out, that's where buyers stall.
 
-Northlight Studio films footwear and outdoor brands on real trails, so buyers can see grip and fit before they order.
+Northlight Studio films footwear on real trails, so buyers see the grip before they order.
 
-I've attached a 4-page deck made for Kestrel with a two-day shoot plan.
+I've attached a short deck for Kestrel with a two-day shoot plan and the first three shots.
 
-Would a short call this week help?
+Would this help before the drop?
 ```
+
+The linter keeps the writing honest across hundreds of leads. It fails research-note wording ("signaling", "a good moment to"), fails an email whose sentences are copied from other people's emails, warns when a follow-up repeats email 1, and warns on "Hi Acme team" greetings.
 
 ## How it works
 
@@ -124,7 +126,14 @@ Click a company to see the research brief, every signal with its source link, th
 Every draft waits here. You see why now, the ideas, all three emails (day 0, 3 and 7), where the email address came from, and region notes. Edit anything, **Send test to me**, then **Approve**. Drafts with red issues from the linter (spammy words, AI-sounding phrases, links in a first email, unfilled `{placeholders}`) can't be approved.
 
 - **Edit** next to the address fixes a wrong or guessed email. It's then marked *Entered by you*.
-- **Attach deck** and **View deck** show and attach the PDF deck made for that company.
+- **Attach deck** and **View deck** show and attach the PDF deck made for that company. Its pages show as thumbnails above the emails.
+- A shared inbox (team@, info@) is flagged, with **Find a person's email** to look for someone's own address.
+
+### Decks made for each company
+
+Each deck has up to six pages: a cover with their logo next to yours, the gap (beside a screenshot of their homepage), what you'd make, a **sample** of the actual work (storyboard shots, script lines or the first steps of the plan), the timeline, and your proof with your own work images, or the next step when there's no proof for that offer. Their brand colour is used when it reads well. Decks that copy another company's slides, never name the company, or have no sample are sent back to the agent.
+
+Put your logo (`logo.png`) and a few images of your work in `~/.leadsmith/portfolio/`, with optional captions in `captions.txt` (`file.jpg: caption`). The proof slide shows the ones whose captions best match each deck.
 
 ![Review screen: idea cards, the email composer, a guessed-email warning and an EU compliance note](docs/screenshots/review.png)
 
@@ -132,19 +141,25 @@ Every draft waits here. You see why now, the ideas, all three emails (day 0, 3 a
 
 Approved emails go out from your own Gmail, only in business hours in each prospect's time zone, one a minute, within your warm-up limit. Follow-ups reply in the same thread when they're due, and stop by themselves when someone replies. Replies show up inline: "A" marks idea A as picked, and **Draft reply** writes your answer for review.
 
+Out-of-office notes, support-desk tickets and auto-responders aren't replies: the follow-ups carry on, after the return date when the note gives one. If one was read as a reply anyway, **It's a real reply** or **Resume follow-ups** corrects it (resumed emails go back to Review first).
+
+**What works** shows first-email reply rates by how the email opens (the gap, about them, their news), how it ends (is it useful, a call, a first piece), with or without a deck, and by month. Only people count, and a version needs about 150 sends before its rate means much. The writer reads the same numbers.
+
 Changed your mind about an approved email that hasn't gone out? **Regenerate** rewrites that person's unsent emails, with an optional note such as "shorter" or "warmer". They come off the send queue straight away and wait in Review until you approve them again. Sent emails are never touched.
 
 ![Outreach: people in sequence, each step's status, an inline reply and the picked idea](docs/screenshots/outreach.png)
 
 ### Business profile: what every agent reads first
 
-Your company and offer, ideal customer, personas, and voice and rules. **Draft from website** fills a first version from your site. Agents quote only the proof written here and never invent their own.
+Your company and offer, ideal customer, personas, and voice and rules. **Answer questions** asks what you want to sell, what each offer delivers, your proof, who it's for and how you sound, plus one short question per TODO still open. An agent turns your answers into the files, and you see each one as a before/after and save it yourself. **Draft from website** fills a first version from your site. Agents quote only the proof written here and never invent their own.
+
+Each offer in **Company & offer → Offers** has its own proof line. Emails and decks cite only the proof for the offer they pitch, and **Find buyers** warns when the offer you're searching for has none.
 
 ![Business profile editor](docs/screenshots/business-profile.png)
 
 ### Email steps: style, and AI-written or your own template
 
-Pick the **Email style** for every first email: an **Idea menu** (three ideas they choose from) or a **Personal pitch + deck**. Then, for each step, either let the AI write a fresh email, with an extra instruction if you like, or use **your own template**. Templates fill in lead fields such as `{first_name}`, `{company}` and `{ideas}`. Any other `{name}`, like `{personal_line}`, becomes one sourced sentence the AI writes. A live preview shows the result on a real lead.
+Pick the **Email style** for every first email: an **Idea menu** (three ideas they choose from) or a **Personal pitch + deck**. Pick **The ask** too: *Is it useful?* (the default, the easiest yes for a stranger), *A short call*, or *Make the first piece*. Then, for each step, either let the AI write a fresh email, with an extra instruction if you like, or use **your own template**. Templates fill in lead fields such as `{first_name}`, `{company}` and `{ideas}`. Any other `{name}`, like `{personal_line}`, becomes one sourced sentence the AI writes. A live preview shows the result on a real lead.
 
 ![Email style picker (idea menu or personal pitch with a deck) above the step templates](docs/screenshots/email-steps.png)
 
@@ -276,7 +291,8 @@ Tip: set **Test mode** in Settings to your own address while you try it out. Eve
 - Every email gets an opt-out line, a `List-Unsubscribe` header and your postal address. A do-not-contact list is checked before every send, and opt-out replies and bounces are added to it automatically.
 - An email that says something is attached can't be approved or sent unless the deck PDF really is attached.
 - **Regenerate** and changing a person's email both move their approved, unsent emails back to Review, so nothing goes out that you haven't seen in its final form.
-- Guessed emails are clearly labelled. Send small batches first, since bounces hurt your sender reputation.
+- Guessed and unconfirmed emails are clearly labelled and aren't written to or sent unless you allow it in Settings. Send small batches first, since bounces hurt your sender reputation.
+- **Bounce guard**: when more than 2% of the last two weeks' emails bounced (and at least 3), sending pauses by itself until you check the addresses and click **Resume sending**. Gmail doesn't tell @gmail.com senders about spam reports, so bounces are the warning sign Leadsmith watches.
 - The dashboard only listens on `127.0.0.1` and rejects cross-site and DNS-rebinding requests.
 - Leads that look like they're in the **EU/EEA, UK, Switzerland or Canada** get a flag with that region's rule in one line.
 - You are responsible for following email and privacy law where you and your recipients are. Read **[COMPLIANCE.md](COMPLIANCE.md)** (a summary, not legal advice).
@@ -289,6 +305,7 @@ Tip: set **Test mode** in Settings to your own address while you try it out. Eve
 ├── brain/        company.md · icp.md · personas.md · voice.md
 ├── leadsmith.db  accounts, signals, contacts, drafts, ideas, runs (SQLite)
 ├── decks/        generated PDF decks
+├── portfolio/    your logo and work images for the decks
 └── exports/      CSV exports (Instantly, Smartlead, Lemlist, HubSpot…)
 ```
 
