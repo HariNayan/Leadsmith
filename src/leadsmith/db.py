@@ -615,8 +615,29 @@ def set_contact_email(contact_id: int, email: str | None, status: str, note: str
 NEED_REQUIRED_SINCE = "2026-11-06T19:30:00+00:00"
 
 
+_UNPROVEN = re.compile(r"guess|unconfirmed|unverified|pattern|inferred|likely", re.I)
+
+
 def is_guessed(email_status: str | None) -> bool:
-    return (email_status or "").strip().lower().startswith("guess")
+    """An address nobody saw published: guessed from a pattern, or found but not confirmed. These aren't written to
+    or sent unless the user allows guessed addresses (every reply so far came from a published address)."""
+    return bool(_UNPROVEN.search(email_status or ""))
+
+
+ROLE_LOCALS = {
+    "info", "hello", "hi", "hey", "contact", "contacts", "team", "support", "help", "admin", "office", "sales", "mail",
+    "email", "enquiries", "enquiry", "inquiries", "inquiry", "general", "marketing", "press", "media", "pr", "partners",
+    "partnerships", "business", "biz", "careers", "jobs", "hr", "billing", "accounts", "finance", "orders", "shop",
+    "store", "service", "customerservice", "care", "feedback", "community", "studio", "crew", "founders", "people",
+    "collab", "collabs", "bookings", "booking", "reception", "noreply", "no-reply", "donotreply", "newsletter",
+}
+
+
+def is_role_address(email: str | None) -> bool:
+    """A shared inbox (team@, info@, hello@...) rather than a person's own address. A first email to one reads as
+    bulk mail, so the person's own address is always worth finding."""
+    local = (email or "").split("@")[0].strip().lower()
+    return bool(local) and (local in ROLE_LOCALS or local.replace(".", "").replace("_", "") in ROLE_LOCALS)
 
 
 def quality_report(domains: list[str]) -> dict[str, Any]:
@@ -659,6 +680,10 @@ def quality_report(domains: list[str]) -> dict[str, Any]:
                 who = c["first_name"] or c["email"] or f"contact {c['id']}"
                 if not c["email"]:
                     issues.append({"domain": domain, "level": "WARN", "issue": f"{who} has no email."})
+                elif is_role_address(c["email"]) and len(contacts) == 1:
+                    issues.append({"domain": domain, "level": "WARN", "issue": f"{c['email']} is a shared inbox, so an email "
+                                   "to it reads as bulk. Find a person there and their own address; keep the shared "
+                                   "inbox only if nobody can be found."})
                 elif is_guessed(c["email_status"]):
                     issues.append({"domain": domain, "level": "INFO" if guessed_ok else "WARN",
                                    "issue": f"{who}'s email is guessed; look for a published one." + (

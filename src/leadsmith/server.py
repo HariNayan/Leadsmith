@@ -537,7 +537,11 @@ def save_contact(domain: str, first_name: str, last_name: str | None = None, tit
         domain, first_name=first_name, last_name=last_name, title=title, email=email, email_status=email_status,
         linkedin_url=linkedin_url, persona=persona, notes=notes, source=source,
     )
-    return {"created": created, "contact": contact}
+    result: dict = {"created": created, "contact": contact}
+    if email and db.is_role_address(email):
+        result["hint"] = (f"{email} is a shared inbox: a first email to it reads as bulk. Keep looking for a named "
+                          "person's own address (people-finder step 4); use the shared inbox only if there's nobody.")
+    return result
 
 
 @mcp.tool()

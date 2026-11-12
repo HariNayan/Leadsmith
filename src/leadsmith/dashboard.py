@@ -348,6 +348,7 @@ async def list_drafts(request: Request) -> Response:
         d["why_now"] = (accounts.get(d["domain"]) or {}).get("why_now")
         d["first_subject"] = first_subjects.get(d["contact_id"])
         d["region"] = compliance.region(accounts.get(d["domain"]) or {"domain": d["domain"]}, d.get("email"))
+        d["shared_inbox"] = db.is_role_address(d.get("email"))
     return ok({"drafts": drafts, "ideas": ideas})
 
 
@@ -474,6 +475,8 @@ async def send(request: Request) -> Response:
     limit = int(data.get("limit") or 25)
     if bool(data.get("dry_run", True)):
         return ok(await asyncio.to_thread(mailer.send_approved, limit, True))
+    if mailer.paused_reason():
+        raise ApiError(f"Sending is paused: {mailer.paused_reason()}", 409)
     # Real sends are spaced out (default one a minute), so they run in the background.
     return ok(mailer.start_background_send(limit))
 
@@ -484,6 +487,10 @@ async def send_status(request: Request) -> Response:
 
 async def send_stop(request: Request) -> Response:
     return ok({"stopping": mailer.stop_send()})
+
+
+async def send_resume(request: Request) -> Response:
+    return ok(mailer.resume_sending())
 
 
 async def replies(request: Request) -> Response:
@@ -873,6 +880,7 @@ def create_app(port: int = 4600):
         Route("/api/send", _wrap(send), methods=["POST"]),
         Route("/api/send/status", _wrap(send_status)),
         Route("/api/send/stop", _wrap(send_stop), methods=["POST"]),
+        Route("/api/send/resume", _wrap(send_resume), methods=["POST"]),
         Route("/api/replies", _wrap(replies), methods=["POST"]),
         Route("/api/contacts/{id:int}/verify", _wrap(verify_contact), methods=["POST"]),
         Route("/api/contacts/{id:int}/email", _wrap(edit_contact_email), methods=["PUT"]),

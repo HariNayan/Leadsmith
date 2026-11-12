@@ -112,8 +112,10 @@ PROMPTS: dict[str, tuple[str, str]] = {
     ),
     "emails": (
         "Find published emails: {domains_short}",
-        "For every contact at these accounts ({domains}) whose email_status is \"guessed\" or who has no email, "
-        "look for a published address before keeping a guess, following step 4 of the people-finder agent: "
+        "For every contact at these accounts ({domains}) whose email_status is \"guessed\", who has no email, or "
+        "whose email is a shared inbox (team@, info@, hello@...), look for a named person's published address, "
+        "following step 4 of the people-finder agent (for a shared inbox, first find the right person, then save "
+        "them as a new contact with their own address): "
         "the company site, LinkedIn search snippets (never fetch LinkedIn pages), then the person's own website, "
         "GitHub (github_profile), YouTube About, newsletter or talk pages (find_emails_on_page). When you find one, "
         "save_contact with the new email, email_status \"public\" and the page URL in notes. If the address changed "

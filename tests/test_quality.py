@@ -109,5 +109,57 @@ class AutoReplyTests(unittest.TestCase):
         self.assertEqual({d["id"]: d["status"] for d in db.drafts(None, 10000)}[second["id"]], "cancelled")
 
 
+class SendingSafetyTests(unittest.TestCase):
+    def setUp(self):
+        with db.connect() as conn:  # other tests send and bounce too
+            conn.execute("DELETE FROM events WHERE type IN ('sent', 'bounce')")
+        config.save_env({"SEND_PAUSED": "", "SEND_RESUMED_AT": ""})
+
+    def test_unproven_and_shared_addresses(self):
+        for status in ("guessed", "guessed (pattern)", "public_unconfirmed", "pattern match", "likely"):
+            self.assertTrue(db.is_guessed(status), status)
+        for status in ("public", "published", "verified", "manual", "imported", None, ""):
+            self.assertFalse(db.is_guessed(status), status)
+        for email in ("team@acme.com", "info@acme.com", "Hello@acme.com", "no-reply@acme.com", "customer.service@x.io"):
+            self.assertTrue(db.is_role_address(email), email)
+        for email in ("dana@acme.com", "tim@pvt.space", "harinayan.work@gmail.com", None):
+            self.assertFalse(db.is_role_address(email), email)
+
+    def test_shared_inbox_is_flagged_for_the_agents(self):
+        db.upsert_account("shared-co.com", name="Shared Co", why_now="launched")
+        db.upsert_contact("shared-co.com", first_name="Shared", email="team@shared-co.com", email_status="public")
+        issues = db.quality_report(["shared-co.com"])["issues"]
+        self.assertTrue(any("shared inbox" in i["issue"] for i in issues))
+
+    def test_bounces_pause_sending_until_you_resume(self):
+        config.save_env({"SEND_PAUSED": "", "SEND_RESUMED_AT": ""})
+        for i in range(40):
+            db.log_event("sent", f"step 1: hello {i}")
+        for i in range(2):
+            db.log_event("bounce", f"bad{i}@nowhere.io")
+        self.assertIsNone(mailer.check_bounce_guard())  # 2 bounces: below the minimum
+        db.log_event("bounce", "bad2@nowhere.io")
+        reason = mailer.check_bounce_guard()  # 3 of 40 = 7.5%
+        self.assertIn("paused", reason)
+        self.assertEqual(mailer.mail_status()["paused"], reason)
+        config.save_env({"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x", "SEND_ENABLED": "true"})
+        try:
+            with mock.patch.object(mailer, "check_replies", return_value={"replies": [], "bounces": []}):
+                report = mailer.send_approved(5, dry_run=False)
+        finally:
+            config.save_env({"GMAIL_ADDRESS": "", "GMAIL_APP_PASSWORD": ""})
+        self.assertIn("paused", report["error"])
+        mailer.resume_sending()
+        self.assertIsNone(mailer.paused_reason())
+        self.assertEqual(mailer.bounce_health()["bounced"], 0)  # counted again from the resume
+        self.assertIsNone(mailer.check_bounce_guard())
+
+    def test_test_mode_sends_dont_count(self):
+        db.log_event("sent", "step 1: hi (test, to me@gmail.com)")
+        self.assertEqual(mailer.bounce_health()["sent"], 0)
+        db.log_event("sent", "step 1: hi")
+        self.assertEqual(mailer.bounce_health()["sent"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

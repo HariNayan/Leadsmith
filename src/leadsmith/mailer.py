@@ -28,9 +28,60 @@ SMTP_HOST, SMTP_PORT = "smtp.gmail.com", 465
 IMAP_HOST = "imap.gmail.com"
 
 
+BOUNCE_LIMIT = 0.02       # above 2% of recent emails bouncing, inbox providers start distrusting the sender
+BOUNCE_MIN = 3            # ...and at least this many bounces, so one bad address in a small batch doesn't pause
+BOUNCE_WINDOW_DAYS = 14
+
+
+def bounce_health() -> dict[str, Any]:
+    """Bounces against emails sent in the last two weeks (or since sending was last resumed). Test-mode sends to
+    yourself don't count."""
+    since = (datetime.now(timezone.utc) - timedelta(days=BOUNCE_WINDOW_DAYS)).replace(microsecond=0).isoformat()
+    resumed = config.get("SEND_RESUMED_AT") or ""  # only what happened after the resume click counts
+    with db.connect() as conn:
+        sent = conn.execute("SELECT COUNT(*) FROM events WHERE type = 'sent' AND at >= ? AND at > ?"
+                            " AND detail NOT LIKE '%(test, to %'", (since, resumed)).fetchone()[0]
+        bounced = conn.execute("SELECT COUNT(*) FROM events WHERE type = 'bounce' AND at >= ? AND at > ?",
+                               (since, resumed)).fetchone()[0]
+    since = max(since, resumed)
+    rate = bounced / sent if sent else 0.0
+    return {"since": since, "sent": sent, "bounced": bounced, "rate": round(rate, 4),
+            "over": bounced >= BOUNCE_MIN and rate > BOUNCE_LIMIT}
+
+
+def paused_reason() -> str | None:
+    return config.get("SEND_PAUSED") or None
+
+
+def check_bounce_guard() -> str | None:
+    """Pause all sending when too many recent emails bounced. Gmail can suspend a sender with a high bounce rate,
+    and it doesn't tell @gmail.com senders about spam reports, so bounces are the warning sign Leadsmith can see.
+    Returns the pause reason, if sending is paused."""
+    if paused_reason():
+        return paused_reason()
+    health = bounce_health()
+    if not health["over"]:
+        return None
+    reason = (f"{health['bounced']} of the last {health['sent']} emails bounced ({health['rate']:.1%}, above "
+              f"{BOUNCE_LIMIT:.0%}). Sending is paused so your Gmail keeps its reputation. Check the bounced addresses, "
+              "then resume.")
+    config.save_env({"SEND_PAUSED": reason})
+    db.log_event("send_paused", reason)
+    return reason
+
+
+def resume_sending() -> dict[str, Any]:
+    """Your click after checking the bounces. The bounce count starts again from now."""
+    config.save_env({"SEND_PAUSED": "", "SEND_RESUMED_AT": db.now()})
+    db.log_event("send_resumed", "sending resumed by you")
+    return {"paused": None}
+
+
 def mail_status() -> dict[str, Any]:
     limit = daily_limit()
     return {
+        "paused": paused_reason(),
+        "bounces": bounce_health(),
         "gmail_address": config.get("GMAIL_ADDRESS"),
         "app_password_set": bool(config.get("GMAIL_APP_PASSWORD")),
         "send_enabled": config.get_bool("SEND_ENABLED"),
@@ -286,6 +337,8 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
             except Exception as exc:  # noqa: BLE001 - a failed check must block live sends, not crash
                 if live:
                     return {**report, "error": f"Couldn't check Gmail for replies first, so nothing was sent: {exc}"}
+        if live and check_bounce_guard():
+            return {**report, "error": f"Sending is paused: {paused_reason()} Nothing was sent.", "paused": paused_reason()}
         budget = max(0, status["daily_limit"] - sent_today())
         report["daily_budget_left"] = budget
         limit = min(limit, budget)
@@ -744,7 +797,8 @@ def check_replies(days: int = 14) -> dict[str, Any]:
             imap.logout()
         except Exception:
             pass
-    return {"replies": replies, "bounces": bounces, "checked": len(contacted),
+    paused = check_bounce_guard() if bounces else paused_reason()
+    return {"replies": replies, "bounces": bounces, "checked": len(contacted), "paused": paused,
             "note": "Pending follow-ups for people who answered were cancelled. Automatic answers (out of office, "
                     "tickets) don't count: those follow-ups carry on. Read and answer the replies in Gmail."}
 

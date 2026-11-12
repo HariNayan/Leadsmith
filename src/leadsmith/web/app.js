@@ -1059,7 +1059,8 @@ function renderComposer(steps) {
                 <button class="btn sm primary" data-extra-save>Add</button><button class="btn sm" data-extra-cancel>Cancel</button></span></span></div>`;
         })() : ""}
         ${c.region ? `<div class="mail-row mail-note">${icon("info", "sm")}<span><b>${esc(c.region.label)}:</b> ${esc(c.region.rule)}</span></div>` : ""}
-        ${c.email && c.email_status === "public" && sourceUrl(c.contact_notes) ? `<div class="mail-row mail-note">${icon("checkCircle", "sm")}<span>Published address, found on ${sourceLink(c.contact_notes)}</span></div>`
+        ${c.email && !c.shared_inbox && c.email_status === "public" && sourceUrl(c.contact_notes) ? `<div class="mail-row mail-note">${icon("checkCircle", "sm")}<span>Published address, found on ${sourceLink(c.contact_notes)}</span></div>`
+          : c.shared_inbox ? `<div class="mail-row mail-note warn">${icon("alert", "sm")}<span>A shared inbox, so this reads as bulk mail. A named person's own address gets far more replies.</span><button class="btn sm" data-find-email style="margin-left:auto">${icon("search", "sm")}Find a person's email</button></div>`
           : c.email_status === "guessed" ? `<div class="mail-row mail-note warn">${icon("alert", "sm")}<span>Guessed from the company's email pattern, so it may bounce.</span><button class="btn sm" data-find-email style="margin-left:auto">${icon("search", "sm")}Look for a published email</button>${state.overview?.bettercontact ? `<button class="btn sm" data-verify="${c.contact_id}" title="Paid: BetterContact charges only if it finds a usable email">${icon("checkCircle", "sm")}Verify (BetterContact)</button>` : ""}</div>` : ""}
         <div class="mail-row"><span class="k">Subject</span>${s.step === 1 ? `<input type="text" data-subject value="${esc(s.subject || "")}" placeholder="Subject" aria-label="Subject" ${editable ? "" : "disabled"}>` : `<span style="font-weight:600">Re: ${esc(subject1)}</span><span style="color:var(--text-2);margin-left:auto;font-size:12px">same thread</span>`}</div>`
         : `<div class="mail-row"><span class="k">LinkedIn</span><span>Connection note to ${esc(fullName(c))}. Send it yourself.</span></div>`}
@@ -1195,11 +1196,13 @@ PAGES.outreach = async () => {
   const stages = ["drafted", "contacted", "replied", "meeting", "bounced", "unsubscribed", "disqualified"];
   setTop("send", "Outreach", "", `
     <button class="btn" id="replies" ${mail.app_password_set ? "" : "disabled"}>${icon("refresh")}Check replies</button>
-    <button class="btn primary" id="send" ${queued ? "" : "disabled"}>${icon("send")}Review & send</button>`);
+    <button class="btn primary" id="send" ${queued && !mail.paused ? "" : "disabled"} ${mail.paused ? 'title="Sending is paused: see the note below"' : ""}>${icon("send")}Review & send</button>`);
   main.innerHTML = `<div class="page">
     <div id="send-progress"></div>
     ${!mail.app_password_set ? `<div class="callout" style="margin-bottom:16px">${icon("alert")}<div>Connect Gmail in <a href="#/settings">Settings</a> to send from here, or <a href="/api/export/sequences?status=approved">download approved sequences</a> for Instantly, Smartlead or Lemlist.</div></div>`
       : !mail.send_enabled ? `<div class="callout" style="margin-bottom:16px">${icon("alert")}<div>Sending is turned off (<code>SEND_ENABLED=false</code> in your Leadsmith .env file).</div></div>` : ""}
+    ${mail.paused ? `<div class="callout red" style="margin-bottom:16px">${icon("ban")}<div style="flex:1"><b>Sending is paused.</b> ${esc(mail.paused)} Bounced people are marked <b>Bounced</b> below; fix or remove those addresses first.</div><button class="btn sm" id="resume-send">Resume sending</button></div>`
+      : mail.bounces?.bounced ? `<div class="help" style="margin:-4px 0 12px;font-size:12.5px;color:var(--text-2)">${icon("info", "sm")} Bounces in the last two weeks: ${mail.bounces.bounced} of ${mail.bounces.sent} emails (${(mail.bounces.rate * 100).toFixed(1)}%). Sending pauses by itself above 2%.</div>` : ""}
     ${mail.test_recipient ? `<div class="callout blue" style="margin-bottom:16px">${icon("info")}<div><b>Test mode is on.</b> Every email and follow-up goes to ${esc(mail.test_recipient)} instead of the prospect. Clear it in <a href="#/settings">Settings</a> to go live.</div></div>` : ""}
     <div class="stats">
       <div class="card stat"><div class="label">${icon("clock", "sm")}Waiting to send</div><div class="value">${queued}</div><div class="foot">approved emails and follow-ups</div></div>
@@ -1273,6 +1276,11 @@ PAGES.outreach = async () => {
     } catch (err) { fail(err); }
   };
   $("#send").onclick = sendFlow;
+  if ($("#resume-send")) $("#resume-send").onclick = () => modal({
+    title: "Resume sending?", art: "send", confirm: "Resume",
+    intro: "Only resume once the bounced addresses are fixed or removed. Gmail can suspend a sender whose emails keep bouncing. The bounce count starts again from now.",
+    onConfirm: async () => { await api("/api/send/resume", { method: "POST", body: {} }); toast("Sending resumed."); refreshOverview(); render(); },
+  });
   watchSending();
 };
 
