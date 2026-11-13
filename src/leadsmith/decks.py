@@ -477,11 +477,19 @@ def check_deck(domain: str, company: str, title: str, slides: list[dict[str, Any
     layouts = [layout_of(s, i, count) for i, s in enumerate(slides)]
     if count >= 4 and "sample" not in layouts:
         return ('Add a sample slide (layout "sample", with 3-4 "frames"): a small piece of the actual work made for them, '
-                "e.g. three storyboard shots, the first lines of a script or the first items of the plan. Showing the "
+                "e.g. the first people or channels you'd use, the first headlines, shots, findings or screens. Showing the "
                 "work beats describing it.")
     text = " ".join([title, *(slide_text(s) for s in slides)])
     if company and not lint.mentions_company(text, company):
         return f"The deck never names {company}. Name the company and its real product or work on the slides."
+    from .brain import account_offer, pitches
+
+    offer = account_offer(db.dossier(domain))
+    cover = slides[layouts.index("cover")] if "cover" in layouts else slides[0]
+    if offer and not pitches(f"{title} {cover.get('heading', '')} {cover.get('body', '')}", offer):
+        return (f"The deck must pitch the lead offer, \"{offer['core']}\" ({offer['goal']}), and its title and cover "
+                "don't. Make the cover that offer made specific to this company, in those words; other services can "
+                "be parts of the plan.")
     repeated, other = _repeats_other_decks(domain, slides)
     if len(repeated) >= 2:
         return (f"Slides {', '.join(map(str, repeated))} nearly repeat the deck made for {other}. Write them for this "

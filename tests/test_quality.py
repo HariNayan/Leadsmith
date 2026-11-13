@@ -330,6 +330,97 @@ class OfferProofTests(unittest.TestCase):
         self.assertIn("NO proof", prompt)
 
 
+SF_BRIEF = ("Find 10 potential startup clients for **Kernelhaus based in San Francisco, California, USA** that are "
+            "interested in launching creator marketing campaigns on Instagram, TikTok, YouTube, and other social "
+            "platforms.\n\n**Kernelhaus services:** We help startups execute creator-led marketing campaigns through:\n\n"
+            "- Creator campaign planning and strategy.\n- Identifying relevant creators and influencers.\n"
+            "- Instagram, TikTok, and YouTube creator campaigns.\n- Animated product videos and promotional content.\n"
+            "- Creative production and campaign content.\n- Ongoing creator marketing partnerships.\n\n"
+            "Target early-stage and growing startups in AI, SaaS, FinTech.\n\nVerify every lead with direct evidence links.")
+INDIA_BRIEF = ("Find 10 potential startup clients based in **San Francisco** that want to enter the Indian market.\n\n"
+               "**Kernelhaus services:** We help startups reach Indian audiences through:\n"
+               "- Creator and influencer marketing campaigns in India.\n- Identifying relevant Indian creators.\n")
+COMFY_EMAIL = ("Hello,\n\nA Comfy node workflow is hard to follow in a screenshot, and you're hiring a Demand Generation "
+               "Lead and a Product Marketing Lead who will need films that show one being built.\n\nWe make animated "
+               "workflow films cut into vertical clips for Instagram, TikTok and YouTube, and can plan a creator campaign "
+               "with AI and visual creators.\n\nI've attached a short deck for Comfy with the first four shots, from an "
+               "empty canvas to three variations. Could you pass it to whoever owns marketing?\n\nIs this relevant right now?")
+
+
+class LeadOfferTests(unittest.TestCase):
+    """The search brief's goal is what every idea A, deck and first email sells, for any user's offer."""
+
+    def setUp(self):
+        from leadsmith import brain
+        self.brain = brain
+        db.upsert_account("comfy-test.org", name="Comfy")
+        db.set_brief(["comfy-test.org"], SF_BRIEF)
+
+    def test_the_lead_offer_comes_from_the_brief(self):
+        sf = self.brain.brief_offer(SF_BRIEF)
+        self.assertEqual(sf["core"], "creator marketing campaigns")
+        self.assertEqual(len(sf["services"]), 6)
+        india = self.brain.brief_offer(INDIA_BRIEF)  # "want to enter the Indian market" is their aim, not the offer
+        self.assertEqual(india["core"], "Creator and influencer marketing campaigns")
+        self.assertIn("Indian market", india["aim"])
+        course = self.brain.brief_offer("Find 10 course creators who need fully animated course lessons for their academy.")
+        self.assertEqual(course["core"], "fully animated course lessons")
+        self.assertIsNone(self.brain.brief_offer("Find 10 fintechs in Berlin"))
+        self.assertFalse(self.brain.pitches("A workflow film series for Comfy's marketing team", sf))
+        self.assertTrue(self.brain.pitches("A creator campaign to launch Comfy on TikTok", sf))
+
+    def test_every_prompt_names_the_lead_offer(self):
+        from leadsmith import jobs
+        for kind in ("write", "deck", "ideas"):
+            _, prompt = jobs._fmt(kind, {"domains": ["comfy-test.org"]})
+            self.assertIn("THE LEAD OFFER for these accounts: launching creator marketing campaigns", prompt, kind)
+            self.assertIn("never lead with one of them instead", prompt, kind)
+        _, deck = jobs._fmt("deck", {"domains": ["comfy-test.org"]})
+        self.assertNotIn("Shot 1", deck)  # the format example isn't a video any more
+
+    def test_an_idea_a_off_the_lead_offer_is_sent_back(self):
+        from leadsmith import server
+        result = server.save_ideas("comfy-test.org", [
+            {"title": "Workflow film series for demand gen", "pitch": "Animated films showing a workflow built node by node"},
+            {"title": "Creator campaign for the Comfy community", "pitch": "A campaign plan and creator shortlist"}])
+        self.assertIn("doesn't pitch the lead offer", result["warnings"][-1])
+        result = server.save_ideas("comfy-test.org", [
+            {"title": "A creator campaign for Comfy's launch", "pitch": "AI artists on TikTok and YouTube build one workflow each"}])
+        self.assertNotIn("warnings", result)
+
+    def test_a_deck_off_the_lead_offer_is_refused(self):
+        from leadsmith import decks
+        slides = [{"layout": "cover", "heading": "A workflow film series for Comfy's marketing team", "body": "One film."},
+                  {"layout": "insight", "heading": "Comfy's channels wait on films", "body": "Two roles are open."},
+                  {"layout": "sample", "heading": "The first shots", "frames": ["Shot 1: an empty canvas"]},
+                  {"layout": "next", "heading": "Start with one clip", "body": "Reply."}]
+        with mock.patch.object(decks, "find_browser", return_value=None), \
+                mock.patch.object(decks, "prospect_brand", return_value={}), \
+                mock.patch.object(decks, "site_screenshot", return_value=None):
+            result = decks.build("comfy-test.org", "Comfy × Kernelhaus: workflow films", slides)
+            self.assertIn("must pitch the lead offer", result["error"])
+            slides[0] = {"layout": "cover", "heading": "A creator campaign for Comfy on TikTok and YouTube", "body": "AI artists."}
+            result = decks.build("comfy-test.org", "Comfy × Kernelhaus: creator campaign", slides)
+            self.assertIn("No Chrome", result["error"])  # passed every check; only the PDF step is missing in tests
+
+    def test_the_comfy_email_is_flagged(self):
+        from leadsmith import lint, server
+        found = {(i["level"], i["rule"]) for i in lint.check("Comfy workflow films", COMFY_EMAIL, 1, "Comfy")["issues"]}
+        self.assertIn(("WARN", "greeting"), found)    # "Hello," greets nobody
+        self.assertIn(("WARN", "questions"), found)   # a forward-this ask plus the real ask
+        self.assertIn(("WARN", "news-opener"), found)  # "you're hiring..."
+        contact, _ = db.upsert_contact("comfy-test.org", first_name="Hiring", email="hiring@comfy-test.org",
+                                       email_status="public")
+        self.assertIn("recruiting inbox", server.save_draft(contact["id"], 1, COMFY_EMAIL, subject="x")["error"])
+        self.assertTrue(db.is_recruiting_address("careers@x.io") and not db.is_recruiting_address("maya@x.io"))
+        founder, _ = db.upsert_contact("comfy-test.org", first_name="Yoland", email="yoland@comfy-test.org",
+                                       email_status="public")
+        saved = server.save_draft(founder["id"], 1, "Hi Yoland,\n\nComfy's TikTok has 40 posts and no creator has shown a "
+                                  "workflow there yet.\n\nWe make animated workflow films for AI tools.\n\nWould this help?",
+                                  subject="Comfy on TikTok")
+        self.assertIn("offer", {i["rule"] for i in saved["lint"]["issues"] if i["level"] == "FAIL"})
+
+
 class IdeaSwapTests(unittest.TestCase):
     def test_an_idea_reused_for_another_company_is_flagged(self):
         from leadsmith import server

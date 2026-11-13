@@ -141,6 +141,8 @@ def _due(draft: dict[str, Any], conn) -> tuple[bool, str, dict[str, Any] | None]
         return False, "email or domain is on the suppression list", None
     if (contact.get("email_status") or "").lower() in ("invalid", "undeliverable"):
         return False, "email failed verification", None
+    if db.is_recruiting_address(contact.get("email")):
+        return False, "recruiting inbox (hiring@, careers@): find a buyer's own address", None
     if db.is_guessed(contact.get("email_status")) and not config.get_bool("ALLOW_GUESSED_EMAILS", False):
         return False, "guessed address: find a published one (or allow guessed addresses in Settings)", None
     account = db.one(conn.execute("SELECT location, timezone FROM accounts WHERE domain = ?", (contact["domain"],)))

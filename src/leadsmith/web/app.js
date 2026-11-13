@@ -661,9 +661,9 @@ async function stepsPage() {
         <div class="card-head">${icon("mail", "sm")}Email style<span style="font-weight:400;color:var(--text-2);margin-left:6px">how the writer opens with every lead</span></div>
         <div class="card-body"><div class="styles" role="radiogroup" aria-label="Email style">
           ${[["idea_menu", "Idea menu", "Three ideas made for them. They reply with one letter.",
-              "Hi Dana,\n\nSaw the Kestrel trail shoe launch. Three things I could make for you:\nA) 45-second launch walkthrough\nB) Three vertical clips for the drop\nC) A trail-tested customer story\n\nWhich one should I make first?"],
+              "Hi Omar,\n\nLumen's trial sends one welcome email, then nothing. Three things I could write for you:\nA) A five-email onboarding sequence\nB) A day-12 upgrade email\nC) A win-back email for lapsed trials\n\nWhich one should I start with?"],
              ["personal_pitch", "Personal pitch + deck", "The gap you noticed, the exact offer, a deck made for them with a sample inside, one easy ask.",
-              "Hi Dana,\n\nThe Kestrel trail shoe page shows six still photos, and grip is the one thing a photo can't show. With the drop three weeks out, that's where buyers stall.\n\nNorthlight Studio films footwear on real trails, so buyers see the grip before they order.\n\nI've attached a short deck for Kestrel with a two-day shoot plan and the first three shots.\n\nWould this help before the drop?"]]
+              "Hi Omar,\n\nLumen's 14-day trial sends one welcome email and then nothing, while your pricing page says most teams decide in their first week.\n\nBrightline writes onboarding sequences for SaaS trials, so new teams reach their first win before they forget the tab.\n\nI've attached a short deck for Lumen with the first three subject lines.\n\nWould this help before the next cohort?"]]
             .map(([key, name, about, sampleText]) => `<label class="style-opt ${style === key ? "on" : ""}">
               <span class="style-top"><input type="radio" name="email-style" value="${key}" ${style === key ? "checked" : ""}><b>${name}</b></span>
               <span class="style-about">${esc(about)}</span>
@@ -714,7 +714,7 @@ async function stepsPage() {
   const ASK_NOTES = {
     interest: "e.g. “Would this help before the launch?” The easiest yes for a stranger: data from 300,000+ cold emails shows interest asks book about twice as many meetings as asking for a call.",
     call: "e.g. “Would a short call this week help?” A bigger ask for someone who doesn't know you yet.",
-    sample: "e.g. “Want me to make the first 30 seconds so you can see it?” Offers the smallest first project from your Offers.",
+    sample: "e.g. “Want me to draft the first one so you can see it?” Offers the smallest first project from your Offers.",
   };
   const askLine = (key) => { $("[data-ask-line]").textContent = ASK_NOTES[key] || ""; };
   askLine(ask);

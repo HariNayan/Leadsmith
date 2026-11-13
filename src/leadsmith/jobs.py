@@ -170,22 +170,24 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "numbers, clients or results. Name the company and its real product or work. {deck_voice}\n"
         "Call save_deck exactly like this, once per account, with the finished content (a fictional example; write "
         "yours from the account):\n"
-        "save_deck({{domain: \"acme.com\", title: \"Acme × <your company>: <the idea in a few words>\", slides: [\n"
-        "  {{layout: \"cover\", heading: \"A 45-second payouts walkthrough for Acme\", body: \"So developers see a payout "
-        "land before they sign up.\"}},\n"
-        "  {{layout: \"insight\", kicker: \"What we noticed\", heading: \"The payouts page explains, but never shows\", "
-        "highlight: \"0 videos\", body: \"Docs and a pricing table, and nothing that shows a payout landing in under a "
-        "minute, which is the whole promise.\"}},\n"
-        "  {{layout: \"concept\", heading: \"What we'd make\", body: \"One walkthrough film, cut three ways.\", "
-        "bullets: [\"45-second hero film for the payouts page\", \"Three 15-second clips for launch posts\", "
-        "\"Captioned for sound-off viewing\"]}},\n"
-        "  {{layout: \"sample\", heading: \"The first three shots\", frames: [\"Shot 1: a developer pastes one API call\", "
-        "\"Shot 2: the payout status flips to sent\", \"Shot 3: the money lands, 41 seconds on the clock\"]}},\n"
-        "  {{layout: \"plan\", heading: \"Two weeks, start to finish\", body: \"We need one product walkthrough call.\", "
-        "steps: [\"Week 1: script and storyboard for your sign-off\", \"Week 2: production and three cutdowns\", "
-        "\"Day 14: final files for the page\"]}},\n"
-        "  {{layout: \"next\", heading: \"Start with the first 15 seconds\", body: \"<the smallest first project>\", "
+        "save_deck({{domain: \"acme.com\", title: \"Acme × <your company>: <the lead offer, made specific>\", slides: [\n"
+        "  {{layout: \"cover\", heading: \"A five-email onboarding sequence for Acme's free trial\", body: \"So new teams "
+        "share their first board before day three.\"}},\n"
+        "  {{layout: \"insight\", kicker: \"What we noticed\", heading: \"Acme's trial sends one welcome email, then "
+        "nothing\", highlight: \"1 email in 14 days\", body: \"Trial users hear from Acme once, while the pricing page "
+        "says most teams decide in their first week.\"}},\n"
+        "  {{layout: \"concept\", heading: \"What we'd write\", body: \"Five short emails, each moving a team one step.\", "
+        "bullets: [\"Day 0: invite your first teammate\", \"Day 2: build the first board\", \"Day 5: the feature trial "
+        "users miss\", \"Day 12: the case for upgrading\"]}},\n"
+        "  {{layout: \"sample\", heading: \"The first three subject lines\", frames: [\"Email 1: Your board is lonely\", "
+        "\"Email 2: Three cards, two minutes\", \"Email 3: What Acme teams do on day 5\"]}},\n"
+        "  {{layout: \"plan\", heading: \"Three weeks, start to finish\", body: \"We need read access to your email "
+        "tool.\", steps: [\"Week 1: trial data review and the sequence map\", \"Week 2: all five emails for your "
+        "sign-off\", \"Week 3: live, and the first results read\"]}},\n"
+        "  {{layout: \"next\", heading: \"Start with the welcome email\", body: \"<the smallest first project>\", "
         "highlight: \"Just reply to this email\"}}]}})\n"
+        "That example sells an email sequence only to show the format. Your deck sells THE LEAD OFFER from the task "
+        "(or company.md's lead offer), whatever it is: its cover names that offer.\n"
         "The field names must be exactly these. Every slide needs a heading and a body, bullets, frames or steps, and "
         "at most 90 words. Never save a test or placeholder deck to find out the format: it's given above, and it "
         "overwrites the prospect's real deck. If save_deck returns an `error`, fix what it says and save again. Check "
@@ -256,19 +258,23 @@ DECK_VOICE = (
 DECK_SLIDES = {
     "personal_pitch": (
         "If the account has no ideas yet, first save_ideas with the single strongest idea first (plus up to two "
-        "alternatives), each answering a saved signal, so the emails and the deck pitch the same thing. Six slides, "
-        "each with its layout: 1) cover: the first idea, made specific to them, in one line. 2) insight: the gap from "
+        "alternatives), each answering a saved signal, so the emails and the deck pitch the same thing. The first idea "
+        "is always the lead offer (see WHAT TO PITCH / THE OFFER), made specific to them. Six slides, "
+        "each with its layout: 1) cover: the lead offer, made specific to them, in one line. 2) insight: the gap from "
         "the research (a `gap` signal if there is one) and the one fact that shows it; their homepage screenshot is "
-        "placed beside it. 3) concept: what you'd make for them, named exactly, and its parts. 4) sample: a small piece "
-        "of the actual work made for them in 3-4 frames (storyboard shots, the first script lines, or the first "
-        "items of the plan): this is what makes the deck stand out, so make it concrete to their product. 5) plan: "
+        "placed beside it. 3) concept: what you'd do for them, named exactly, and its parts. 4) sample: a small piece "
+        "of the lead offer's real deliverable, made for them, in 3-4 frames. Match it to the offer: for a campaign, "
+        "the first people or channels you'd use and why; for writing, the first headlines or subject lines; for a "
+        "film, the first shots; for an audit, the first findings; for software, the first screens. This is what makes "
+        "the deck stand out, so make it concrete to their product. 5) plan: "
         "scope and timeline as steps, and what you need from them. 6) proof, only with the proof the task gives for "
         "this offer (the user's work images are added beside it); with no proof for this offer, make slide 6 a next "
         "slide instead: the smallest first project, and the ask."),
     "idea_menu": (
         "If the account has no ideas yet, first save_ideas with three ideas (A, B, C), each answering a saved signal. "
         "Six slides, each with its layout: 1) cover. 2) insight: the gap and the fact that shows it. 3) concept: the "
-        "three ideas as bullets (\"A) ...\", \"B) ...\", \"C) ...\"). 4) sample: idea A made concrete in 3-4 frames. "
+        "three ideas as bullets (\"A) ...\", \"B) ...\", \"C) ...\"), A being the lead offer. 4) sample: a small piece "
+        "of idea A's real deliverable in 3-4 frames (the first people, headlines, shots, findings or screens). "
         "5) plan: idea A's steps. 6) next: reply with A, B or C (the highlight), and the smallest first project."),
 }
 
@@ -283,16 +289,31 @@ def _brief_line(domains: list[str]) -> str:
             " AND brief != ''", domains))
     if not found:
         return ""
+    from .brain import brief_offer
+
     briefs: dict[str, list[str]] = {}
     for row in found:
         briefs.setdefault(row["brief"], []).append(row["domain"])
-    parts = [f"For {', '.join(ds)}:\n{text}" for text, ds in briefs.items()]
+    parts = []
+    for text, ds in briefs.items():
+        offer = brief_offer(text)
+        lead = ""
+        if offer:
+            others = [s for s in offer["services"] if s.lower() != str(offer["goal"]).lower()]
+            lead = (f"THE LEAD OFFER for these accounts: {offer['goal']}."
+                    + (f" (Their aim: {offer['aim']}.)" if offer.get("aim") else "")
+                    + " Idea A, the deck's cover and concept, and email 1 all pitch THIS, named in these words. "
+                    + (f"The brief's other services ({'; '.join(others)}) are parts of it or ideas B and C: never "
+                       "lead with one of them instead, even when it seems a better fit for the company. "
+                       if others else "")
+                    + "\n")
+        parts.append(f"For {', '.join(ds)}:\n{lead}The brief:\n{text}")
     return ("\n\nWHAT TO PITCH. These accounts were found for the user's own search brief below. It says what the "
-            "user is offering them in this campaign, and it wins over the default offer in company.md: pitch the "
-            "brief's services and angle, in the emails and in the deck. Use company.md only for the sender, voice "
-            "and proof that is relevant to this offer; leave out proof and services from company.md that don't match "
-            "the brief (if none matches, cite no proof). Skip the brief's research instructions (rankings, lists): "
-            "they were for the search.\n\n" + "\n\n".join(parts))
+            "user is offering them in this campaign, and it wins over the default offer in company.md. Use "
+            "company.md only for the sender, voice and proof that is relevant to this offer; leave out proof and "
+            "services from company.md that don't match the brief (if none matches, cite no proof). Skip the brief's "
+            "research instructions (rankings, lists, which fields to collect): they were for the search.\n\n"
+            + "\n\n".join(parts))
 
 
 def _offer_line(domains: list[str]) -> str:

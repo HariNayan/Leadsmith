@@ -71,6 +71,70 @@ def offers() -> dict[str, object]:
     return {"offers": found, "lead": lead, "has_offers": bool(found), "general_proof": proof_items}
 
 
+_GOAL_RE = re.compile(
+    r"\b(?:interested in|looking (?:for|to)|who (?:need|want)|that (?:need|want)|in need of|ready for|to buy|wanting)\s+"
+    r"(?:help (?:with|to)\s+)?(.+?)(?:\.\s|\.$|\n|$)", re.I)
+_CUT_RE = re.compile(r"\s+(?:on|for|in|with|across|via|through|using|from|to|that|so)\s+|,|\(", re.I)
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"[*_`#>]+", "", text or "").strip()
+
+
+def brief_offer(brief: str | None) -> dict[str, object] | None:
+    """What a search brief sells: its goal ("interested in launching creator marketing campaigns on ...") and the
+    services it lists. The goal is the lead offer: idea A, the deck and email 1 pitch it, and the listed services
+    are parts of it. None when the brief names neither."""
+    text = _plain(brief or "")
+    if not text:
+        return None
+    goal_m = _GOAL_RE.search(text.split("\n\n")[0]) or _GOAL_RE.search(text)
+    goal = goal_m.group(1).strip(" .") if goal_m else ""
+    services: list[str] = []
+    m = re.search(r"services?[^\n]*\n((?:\s*(?:[-*•]|\d+\.)\s+.+\n?)+)", text, re.I) or \
+        re.search(r"((?:^\s*(?:[-*•]|\d+\.)\s+.+\n?){2,})", text, re.M)
+    if m:
+        services = [re.sub(r"^\s*(?:[-*•]|\d+\.)\s+", "", ln).strip(" .") for ln in m.group(1).splitlines() if ln.strip()]
+    aim = None
+    if goal.lower().startswith("to ") and services:
+        # "startups that want to enter the Indian market": that's the client's aim; the offer is the first service.
+        aim, goal = goal, services[0]
+    if not goal and services:
+        goal = services[0]
+    if not goal:
+        return None
+    core = _CUT_RE.split(goal)[0]
+    core = re.sub(r"^(?:launching|running|starting|getting|doing|making|building|creating|improving|growing)\s+", "",
+                  core, flags=re.I).strip()
+    return {"goal": goal, "aim": aim, "core": core or goal, "terms": sorted(_terms(core or goal)), "services": services[:8]}
+
+
+def _terms(text: str) -> set[str]:
+    """The words that name an offer, reduced to a stem so "campaigns" matches "campaign"."""
+    return {w.rstrip("s") for w in re.findall(r"[a-z][a-z-]{3,}", (text or "").lower()) if w not in _STOP}
+
+
+def pitches(text: str, offer: dict[str, object] | None, need: int = 2) -> bool:
+    """Does this text pitch the lead offer? At least two of its naming words (all, if it has fewer)."""
+    if not offer or not offer.get("terms"):
+        return True
+    have = {w.rstrip("s") for w in re.findall(r"[a-z][a-z-]{3,}", (text or "").lower())}
+    terms = set(offer["terms"])  # type: ignore[arg-type]
+    return len(terms & have) >= min(need, len(terms))
+
+
+def account_offer(account: dict | None) -> dict[str, object] | None:
+    """The lead offer for one account: its search brief's goal, else the lead offer in company.md's Offers."""
+    found = brief_offer((account or {}).get("brief"))
+    if found:
+        return found
+    profile = offer_for()
+    if profile.get("from_profile") and profile.get("offer"):
+        name = str(profile["offer"])
+        return {"goal": name, "aim": None, "core": name, "terms": sorted(_terms(name)), "services": []}
+    return None
+
+
 def offer_for(text: str | None = None) -> dict[str, object]:
     """Which offer a search brief (or, without one, the profile's lead offer) is about, and whether there's proof for
     it. Used to warn before a search and to tell the writer exactly what it may claim."""

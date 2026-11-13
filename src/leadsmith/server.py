@@ -123,8 +123,8 @@ ASK_HOW = {
                  "launch?\" or \"Is this worth a look for <Company>?\". Don't ask for a call: a stranger says yes to "
                  "interest far more often than to a meeting."),
     "call": "End with one short call ask, e.g. \"Would a short call this week help?\".",
-    "sample": ("End by offering to make the smallest first piece for them, e.g. \"Want me to cut the first 30 seconds "
-               "so you can see it on your page?\". Only offer what company.md's offer says you can deliver."),
+    "sample": ("End by offering to make the smallest first piece for them, e.g. \"Want me to draft the first one so "
+               "you can see it?\". Only offer what the offer says you can deliver."),
 }
 
 PITCH_SEQUENCE = """## Sequence (set by Email style: Personal pitch + deck)
@@ -627,6 +627,10 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
         return {"error": f"{contact.get('email')} is a guessed address, so no email is written to it (guessed addresses "
                          "get few replies and cause bounces). Find a published address for this person and save it "
                          "with save_contact, or skip them. The user can allow guessed addresses in Settings."}
+    if channel == "email" and db.is_recruiting_address(contact.get("email")):
+        return {"error": f"{contact.get('email')} is the company's recruiting inbox: a sales email there reaches the "
+                         "hiring team, not a buyer, and reads as spam. Find the founder or the person who owns this "
+                         "area and their own address (people-finder step 4), or skip this company."}
     if attach_deck and not decks.pdf_ready(contact["domain"]):
         return {"error": "There's no PDF deck for this account to attach. Call save_deck first (and check it rendered "
                          "as a PDF), or save the email without attach_deck and without mentioning an attachment."}
@@ -639,6 +643,13 @@ def save_draft(contact_id: int, step: int, body: str, subject: str | None = None
     result = lint.check(subject, body, step, account.get("name"), contact.get("first_name"), attached=bool(attach_deck),
                         style=(config.get("EMAIL_STYLE") or "idea_menu").strip(), others=others,
                         first_email=first_email, ask=lint.ask_setting())
+    offer = brain.account_offer(account)
+    if step == 1 and channel == "email" and not fixed and offer and not brain.pitches(f"{subject or ''} {body}", offer):
+        result["issues"].append({"level": "FAIL", "rule": "offer", "message": (
+            f"Doesn't pitch the lead offer, \"{offer['core']}\". Email 1 sells that offer, made specific to them; "
+            "other services can come up later.")})
+        result["fails"] += 1
+        result["ok"] = False
     delay = send_after_days if send_after_days is not None else {1: 0, 2: 3}.get(step, 7)
     try:
         draft = db.upsert_draft(contact_id, step, subject, body, channel, delay, result)
@@ -695,6 +706,14 @@ def save_ideas(domain: str, ideas: list[dict]) -> dict:
         result["hint"] = ("Swap test failed: an idea that fits another company unchanged isn't made for this one. Rewrite "
                           "those so only this company could get them (their product, their audience, their gap), and "
                           "save_ideas again.")
+    offer = brain.account_offer(db.dossier(domain))
+    first = next((i for i in saved if i.get("status") == "picked"), saved[0] if saved else None)
+    if offer and first and first.get("status") != "picked" and not brain.pitches(
+            f"{first.get('title') or ''} {first.get('pitch') or ''}", offer):
+        result.setdefault("warnings", []).append(
+            f"Idea A (\"{first['title']}\") doesn't pitch the lead offer: {offer['goal']}.")
+        result["hint"] = (f"Idea A must be the lead offer, \"{offer['core']}\", made specific to this company, and named "
+                          "in those words. Other services can be B and C. Reorder or rewrite, and save_ideas again.")
     return result
 
 

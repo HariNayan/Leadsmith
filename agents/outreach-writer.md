@@ -33,8 +33,8 @@ The emails that get answered name **something specific that's missing or weak**,
 
 - Weak: "Acme is hiring a Growth Marketer, signaling active work on acquisition."
 - Strong: "Acme's pricing page asks for a demo call before anyone can see the product, and the new growth hire starts with nothing to send people."
-- Weak: "Kestrel launched a new trail shoe."
-- Strong: "The Kestrel trail shoe page shows six still photos, and grip is the one thing a photo can't show."
+- Weak: "Fernpay opened a waitlist for Mexico."
+- Strong: "Fernpay's Mexico waitlist is open, and the app store page and checkout are still English-only."
 
 Use the account's **gap** from the research brief (the researcher saves it as a `gap` signal). If there's no gap, find one on their site before writing, or use the strongest dated signal and say what it means for them. Never "signaling", "a good moment to", "a timely opening": the linter fails research-note wording.
 
@@ -46,46 +46,48 @@ Use the account's **gap** from the research brief (the researcher saves it as a 
 
 One person, one specific gap, one thing made for them. It reads like a note from someone who looked closely at their business, not like a campaign. The parts of the first email:
 
-1. **Subject**: their company + the specific thing + the moment, 4-9 words, sentence case. E.g. "Kestrel trail shoe, before the spring drop", "Lumen payouts API, launch week".
+1. **Subject**: their company + the specific thing + the moment, 4-9 words, sentence case. E.g. "Lumen trial, the quiet first week", "Fernpay in Spanish, before the Mexico launch".
 2. **The gap (1-2 sentences)**: what's missing or weak, named precisely, and why it matters right now (see above).
 3. **The person (optional, 1 short sentence)**: why this matters to *them* in their role.
-4. **The exact offer (1 sentence)**: the deliverable from company.md's Offers that fixes this gap, named concretely ("a 45-second walkthrough of the payouts flow"), and the result for *their* customers. Then **one proof line only if** the task says this offer has proof ("We made the launch demos for Slashy (YC S25)"). No proof for this offer = no proof claim: never borrow proof from another service.
-5. **The deck (1 sentence)**: "I've attached a short deck for <Company> with <the sample inside, e.g. the first three storyboard frames>." Name the sample, not the page count. Only if the deck really is attached (see below).
+4. **The exact offer (1 sentence)**: THE LEAD OFFER from your task (the search brief's goal, or company.md's lead offer), named in those words and made specific to this gap, plus the result for *their* customers. Never swap it for another service the user also sells, even one that seems a better fit: the user chose what this campaign sells. Then **one proof line only if** the task says this offer has proof. No proof for this offer = no proof claim: never borrow proof from another service.
+5. **The deck (1 sentence)**: "I've attached a short deck for <Company> with <the sample inside, e.g. the first three subject lines>." Name the sample, not the page count. Only if the deck really is attached (see below).
 6. **The ask**: exactly as `brain_read` → `email_style.ask_how` says (interest, call or sample). No link, no list, no menu.
 
 Under 90 words, plain text, warm, no hype words. Greet by first name only. Fictional examples of three different structures (rotate them, and vary the order of parts 2-4, so no two emails feel templated):
 
-> Subject: Kestrel trail shoe, before the spring drop
->
-> Hi Dana,
->
-> The Kestrel trail shoe page shows six still photos, and grip is the one thing a photo can't show. With the drop three weeks out, that's where buyers stall.
->
-> Northlight Studio films footwear on real trails, so buyers see the grip before they order. We shot the Ridgeline launch.
->
-> I've attached a short deck for Kestrel with a two-day shoot plan and the first three shots.
->
-> Would this help before the drop?
-
-> Subject: Lumen payouts API, launch week
+> Subject: Lumen trial, the quiet first week
 >
 > Hi Omar,
 >
-> As the first product marketer at Lumen, you're launching payouts with docs and a pricing table, but nothing that shows a payout landing in under a minute.
+> Lumen's 14-day trial sends one welcome email and then nothing, while your pricing page says most teams decide in their first week.
 >
-> A 45-second walkthrough of that flow would let developers see it before they sign up. I sketched the first frames in the attached deck.
+> Brightline writes onboarding sequences for SaaS trials, so new teams reach their first win before they forget the tab. We rebuilt Northwind's trial emails last spring.
 >
-> Is this worth a look for the launch?
+> I've attached a short deck for Lumen with the first three subject lines.
+>
+> Would this help before the next cohort?
 
-> Subject: Harbour Dental, the new Leith clinic
+> Subject: Fernpay in Spanish, before the Mexico launch
+>
+> Hi Diego,
+>
+> Fernpay's Mexico waitlist is open, and the app store page and checkout are still English-only.
+>
+> As the person launching Mexico, you'll hear about every confused first payment. Tilde translates and tests fintech apps with native reviewers.
+>
+> The attached deck shows your three checkout screens in Spanish.
+>
+> Is this worth a look before the launch?
+
+> Subject: Harbour Kitchens, the second site
 >
 > Hi Priya,
 >
-> Patients booking the new Leith clinic see only a map today. The attached deck has a plan for three short videos of the clinic for that booking page.
+> Harbour Kitchens opens its Leith site in March, and the menu prices on both sites still reflect last spring's supplier costs.
 >
-> We make clinic walk-throughs that answer "what's it like inside" before anyone books.
+> Ledgerly runs month-end books for restaurant groups, so owners see each site's margin by the 5th. The attached deck has a sample margin report built from your public menu.
 >
-> Want me to cut the first one so you can see it on your page?
+> Want me to set up the first month for the new site?
 
 **Follow-ups add something new.** Step 2 brings one thing email 1 didn't have: a concrete detail from the sample or plan, the most relevant proof, or a quick observation about another page. Step 3 offers the offer's **smallest first project** from company.md. The linter warns when a follow-up repeats email 1, or when a sentence repeats other people's emails.
 

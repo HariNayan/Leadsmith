@@ -49,7 +49,7 @@ REPORT_SPEAK = [
 ]
 # Opening with news they already know (their own job ad, their own hiring) instead of what it means for them.
 NEWS_OPENER_RE = re.compile(
-    r"careers page|job (?:post|posting|listing|opening|ad)s?\b|\b(?:is|are) (?:actively )?hiring\b|"
+    r"careers page|job (?:post|posting|listing|opening|ad)s?\b|(?:\b(?:is|are)|'re) (?:actively |now )?hiring\b|"
     r"\bis expanding (?:its|the)\b|\bhas (?:an )?open roles?\b|\blists (?:a|an|two|three|several|new)\b", re.I)
 GREETING_RE = re.compile(r"^\s*(?:hi|hey|hello|dear)\s+([^,\n]{1,60}),", re.I)
 
@@ -81,7 +81,7 @@ def ask_kind(text: str) -> str | None:
 
 def _sentences(text: str) -> list[str]:
     lines = (text or "").strip().splitlines()
-    if lines and GREETING_RE.match(lines[0]):
+    if lines and (GREETING_RE.match(lines[0]) or re.fullmatch(r"\s*(?:hi|hey|hello|dear|greetings)\b[^.?\n]{0,60}", lines[0], re.I)):
         lines = lines[1:]
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", "\n".join(lines)) if s.strip()]
 
@@ -197,6 +197,11 @@ def _craft_checks(add, text: str, lower: str, step: int, first_name: str | None,
         if NEWS_OPENER_RE.search(opening_line):
             add("WARN", "news-opener", "Opens by repeating their own news (a job ad, hiring). They know it. Open with "
                                        "the gap it reveals and what that costs them now.")
+    if re.match(r"\s*(?:hi|hey|hello|dear|greetings)(?: there| all| team| sir| madam)?\s*[,!.]?\s*\n", text, re.I):
+        add("WARN", "greeting", "Greets nobody by name, so it reads as bulk mail. Write to a named person.")
+    if step == 1 and text.count("?") == 2:
+        add("WARN", "questions", "Two questions. End with one easy question; a second ask (\"could you forward this?\") "
+                                 "makes them choose, and they usually answer neither.")
     greeting = GREETING_RE.match(text)
     if cold and greeting:
         name = greeting.group(1).strip()

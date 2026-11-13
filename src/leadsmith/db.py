@@ -643,11 +643,23 @@ ROLE_LOCALS = {
 }
 
 
+RECRUITING_LOCALS = {"hiring", "jobs", "job", "careers", "career", "recruiting", "recruitment", "recruit", "talent",
+                     "hr", "people-ops", "peopleops", "join", "joinus", "join-us", "apply", "applications", "cv",
+                     "resume", "resumes", "internships", "intern"}
+
+
+def is_recruiting_address(email: str | None) -> bool:
+    """The inbox for job applicants (hiring@, careers@, jobs@...). Never a place for a sales email."""
+    local = (email or "").split("@")[0].strip().lower()
+    return bool(local) and (local in RECRUITING_LOCALS or local.replace(".", "").replace("_", "") in RECRUITING_LOCALS)
+
+
 def is_role_address(email: str | None) -> bool:
     """A shared inbox (team@, info@, hello@...) rather than a person's own address. A first email to one reads as
     bulk mail, so the person's own address is always worth finding."""
     local = (email or "").split("@")[0].strip().lower()
-    return bool(local) and (local in ROLE_LOCALS or local.replace(".", "").replace("_", "") in ROLE_LOCALS)
+    return bool(local) and (local in ROLE_LOCALS or local.replace(".", "").replace("_", "") in ROLE_LOCALS
+                            or is_recruiting_address(email))
 
 
 def quality_report(domains: list[str]) -> dict[str, Any]:
@@ -690,6 +702,9 @@ def quality_report(domains: list[str]) -> dict[str, Any]:
                 who = c["first_name"] or c["email"] or f"contact {c['id']}"
                 if not c["email"]:
                     issues.append({"domain": domain, "level": "WARN", "issue": f"{who} has no email."})
+                elif is_recruiting_address(c["email"]):
+                    issues.append({"domain": domain, "level": "FAIL", "issue": f"{c['email']} is the recruiting inbox: "
+                                   "no sales email goes there. Find the founder or the person who owns this area."})
                 elif is_role_address(c["email"]) and len(contacts) == 1:
                     issues.append({"domain": domain, "level": "WARN", "issue": f"{c['email']} is a shared inbox, so an email "
                                    "to it reads as bulk. Find a person there and their own address; keep the shared "
