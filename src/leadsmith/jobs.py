@@ -165,7 +165,7 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "Build a personalised PDF deck for each of these accounts: {domains}.\n"
         "First call brain_read (company, proof, voice, email_style). Then for each account call get_account (research, "
         "signals, ideas, contacts, and `deck`). Skip an account whose `deck` already has a `pdf_path`, unless the "
-        "user asked to rebuild.\n{deck_slides}{brief_line}\n"
+        "user asked to rebuild.{rebuild_line}\n{deck_slides}{brief_line}{deck_request}\n"
         "Use only facts from the account's saved signals and research and proof written in company.md: no invented "
         "numbers, clients or results. Name the company and its real product or work. {deck_voice}\n"
         "Call save_deck exactly like this, once per account, with the finished content (a fictional example; write "
@@ -191,7 +191,7 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "The field names must be exactly these. Every slide needs a heading and a body, bullets, frames or steps, and "
         "at most 90 words. Never save a test or placeholder deck to find out the format: it's given above, and it "
         "overwrites the prospect's real deck. If save_deck returns an `error`, fix what it says and save again. Check "
-        "it returned a `pdf`. Don't write or change any emails, and don't read or open other files.{extra}",
+        "it returned a `pdf`. Don't write or change any emails, and don't read or open other files.",
     ),
     "autofill": (
         "Fill business profile from {website}",
@@ -387,6 +387,14 @@ def _fmt(kind: str, params: dict[str, Any]) -> tuple[str, str]:
         "need": params.get("need") or "", "have": params.get("have") or 0, "saved": params.get("saved") or "",
         "previous": (params.get("previous") or "(no summary)")[-1500:],
         "deck_slides": DECK_SLIDES[_style()],
+        "rebuild_line": (" The user asked to rebuild: build a new deck for each of these accounts even where `deck` "
+                         "already has a `pdf_path`. It replaces the old one, so don't copy the old slides: write them "
+                         "fresh." if params.get("rebuild") else ""),
+        "deck_request": (f"\n\nWHAT THE USER WANTS IN THIS DECK (their own words; follow it as far as the facts allow, "
+                         f"and it wins over the slide plan above where they differ):\n---\n{str(params['extra']).strip()[:1500]}"
+                         "\n---\nFacts still come only from saved signals and company.md: if the request needs a fact "
+                         "you don't have, leave it out and say so in your summary."
+                         if params.get("extra") and str(params.get("extra")).strip() else ""),
         "deck_voice": DECK_VOICE,
     }
     if kind in ("research", "write", "deck", "emails", "ideas") and not domains:
@@ -633,7 +641,17 @@ def start(kind: str, params: dict[str, Any], engine_key: str | None = None,
         raise ValueError(f"{engine.label} isn't installed. {engine.install}")
     if kind == "deck":
         title, prompt = _fmt("deck", params)
-        return _launch_chain([_deck_stage(title, prompt)], session)
+        if params.get("rebuild"):
+            title = title.replace("Build decks", "Rebuild deck" if len(params.get("domains") or []) == 1 else "Rebuild decks")
+        stages = [_deck_stage(title, prompt)]
+        if params.get("rewrite_emails"):
+            # The emails mention the deck and its sample: rewrite the unsent ones so they match the new deck.
+            w_title, w_prompt = _fmt("write", {"domains": params.get("domains") or [], "extra": (
+                "The deck for these accounts was just rebuilt. Rewrite the unsent emails so they match it: the deck "
+                "line names what its sample slide shows now (get_account → deck.sample), and the email pitches what "
+                "the deck pitches. Don't touch sent emails.")})
+            stages.append(Stage("write", w_title.replace("Write outreach", "Match emails to the new deck"), w_prompt, engine))
+        return _launch_chain(stages, session)
     if kind == "find_buyers":
         title, prompt = _fmt(kind, params)
         return _launch_chain(_find_chain(title, prompt, engine), session)

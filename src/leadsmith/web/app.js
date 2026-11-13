@@ -994,7 +994,7 @@ async function openAccount(domain) {
       <div class="drawer-top">${icon("building")}<span style="font-weight:600">Company</span>
         <span style="margin-left:auto"></span>
         ${a.deck && a.deck.pdf_path ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(a.domain)}" target="_blank">${icon("file", "sm")}Deck</a>` : ""}
-        <button class="btn sm" data-job="deck">${icon("file", "sm")}${a.deck ? "Rebuild deck" : "Build deck"}</button>
+        <button class="btn sm" data-deck-regen>${icon("file", "sm")}${a.deck ? "Regenerate deck" : "Make deck"}</button>
         <button class="btn sm primary" data-job="research">${icon("sparkles", "sm")}Research & write</button>
         <button class="btn ghost icon" data-x aria-label="Close">${icon("x")}</button></div>
       <div class="drawer-body">
@@ -1055,6 +1055,8 @@ async function openAccount(domain) {
       try { await api(`/api/accounts/${encodeURIComponent(a.domain)}/status`, { method: "POST", body: { status: e.target.value } }); toast("Stage updated"); if (state.page === "leads") render(); } catch (err) { fail(err); }
     };
     $$("[data-job]", d).forEach((b) => (b.onclick = async () => { try { await startJob(b.dataset.job, { domains: [a.domain] }); } catch (e) { fail(e); } }));
+    const deckBtn = $("[data-deck-regen]", d);
+    if (deckBtn) deckBtn.onclick = () => deckModal(a.domain, a.name, Boolean(a.deck));
     $("[data-add-person]", d).onclick = () => addPersonModal(a);
     const rv = $("[data-review]", d);
     if (rv) rv.onclick = () => { state.reviewTab = "draft"; state.reviewContact = Number(rv.dataset.review); };
@@ -1189,7 +1191,8 @@ function renderComposer(steps) {
     <div class="comp-head">${avatar(fullName(c), "lg")}
       <div><h2>${esc(fullName(c))}</h2><div class="meta">${esc(c.title || "")}${c.title ? " at" : ""} ${logo(c.domain, c.company)} ${esc(c.company || c.domain)}</div></div>
       <div class="actions"><button class="btn sm" data-open="${esc(c.domain)}">${icon("building", "sm")}Company</button>
-        ${c.has_deck ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener">${icon("file", "sm")}View deck</a>` : ""}
+        ${c.has_deck ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener">${icon("file", "sm")}View deck</a>`
+          : `<button class="btn sm" data-deck-regen title="Write a deck made for this company">${icon("file", "sm")}Make deck</button>`}
         ${pending.length > 1 ? `<button class="btn sm" data-approve-all>${icon("check", "sm")}Approve all ${pending.length}</button>` : ""}</div>
     </div>
     ${c.why_now ? `<div class="context">${icon("sparkles")}<div><b>Why now.</b> ${esc(c.why_now)}</div></div>` : '<div style="height:14px"></div>'}
@@ -1203,7 +1206,8 @@ function renderComposer(steps) {
     })()}
     ${c.has_deck ? `<div class="deck-strip">
       <div class="deck-strip-head">${icon("file", "sm")}<b>Deck for ${esc(c.company || c.domain)}</b><span>what they'll open with the first email</span>
-        <a class="btn sm ghost" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener" style="margin-left:auto">${icon("external", "sm")}Open PDF</a></div>
+        <button class="btn sm" data-deck-regen style="margin-left:auto">${icon("refresh", "sm")}Regenerate deck</button>
+        <a class="btn sm ghost" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener">${icon("external", "sm")}Open PDF</a></div>
       <iframe src="/api/decks/${encodeURIComponent(c.domain)}/preview?v=${encodeURIComponent(c.deck_updated || "")}" title="Deck pages for ${esc(c.company || c.domain)}" loading="lazy" tabindex="-1"></iframe>
     </div>` : ""}
     <div class="steps" role="tablist">${steps.map((x) => `<button role="tab" data-step="${x.id}" class="${x.id === s.id ? "active" : ""}" aria-selected="${x.id === s.id}">${x.kind === "reply" ? "Your reply" : x.channel === "linkedin" ? "LinkedIn note" : `Email ${x.step}`}<span class="day">${x.kind === "reply" ? "answer" : x.channel === "linkedin" ? "manual" : x.step === 1 ? "Day 0" : `Day ${x.send_after_days}`}</span>${x.status !== "draft" ? badge(x.status, null, false) : ""}</button>`).join("")}</div>
@@ -1278,6 +1282,7 @@ function renderComposer(steps) {
   on("[data-copy]", () => { navigator.clipboard.writeText(ta.value); toast("Copied"); });
   on("[data-test]", async () => { try { await save(); const r = await api(`/api/drafts/${s.id}/test`, { method: "POST", body: {} }); toast(`Test sent to ${esc(r.sent_to)}`); } catch (e) { fail(e); } });
   on("[data-open]", () => openAccount(c.domain));
+  $$("[data-deck-regen]", box).forEach((b) => (b.onclick = () => deckModal(c.domain, c.company, c.has_deck)));
   on("[data-new-ideas]", () => {
     const company = c.company || c.domain;
     const had = ((state.reviewIdeas || {})[c.domain] || []).length;
@@ -1472,6 +1477,26 @@ function whatWorks(w) {
       </div>`).join("")}</div>
     <p class="help works-foot">${icon("info", "sm")} The grey number is how many were sent. Under ${w.min_sample} sends a rate is only a hint: a couple of replies either way can flip it.</p>
   </div>`;
+}
+
+// Make or regenerate one company's deck, with the user's own words for what it should say.
+function deckModal(domain, company, hasDeck, { after } = {}) {
+  modal({
+    title: `${hasDeck ? "Regenerate the deck" : "Make a deck"} for ${company || domain}`, art: "file", wide: true,
+    confirm: hasDeck ? "Regenerate deck" : "Make deck",
+    intro: `The agent ${hasDeck ? "writes a new deck that replaces the current one" : "writes a deck made for them"}, from their research and your business profile. It never invents facts.`,
+    body: `<label class="field">What should the deck say? <span class="help">Optional, in your own words. It wins over the usual slide plan. For example: lead with the TikTok launch plan, use their real product names, make the sample three creator profiles, keep it to four pages, a warmer tone.</span>
+        <textarea id="deck-request" rows="4" placeholder="Leave empty for a fresh take"></textarea></label>
+      <label class="check" style="margin-top:12px"><input type="checkbox" id="deck-emails" checked>Also rewrite the unsent emails so they match the new deck</label>
+      <p class="help" style="margin:6px 0 0">Rewritten emails go back to Review, even ones you'd approved. Sent emails stay as they are.</p>`,
+    onConfirm: async (root) => {
+      const extra = $("#deck-request", root).value.trim();
+      const rewrite = $("#deck-emails", root).checked;
+      await startJob("deck", { domains: [domain], rebuild: true, extra, rewrite_emails: rewrite }, { quiet: true });
+      toast(`${hasDeck ? "Regenerating" : "Making"} the deck for ${esc(company || domain)}${rewrite ? ", then matching the emails to it" : ""}. <a href="#/activity">View run</a>`, "ok", 7000);
+      after?.();
+    },
+  });
 }
 
 async function watchSending() {

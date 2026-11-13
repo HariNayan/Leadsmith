@@ -421,6 +421,30 @@ class LeadOfferTests(unittest.TestCase):
         self.assertIn("offer", {i["rule"] for i in saved["lint"]["issues"] if i["level"] == "FAIL"})
 
 
+class DeckRegenerateTests(unittest.TestCase):
+    def test_rebuild_with_the_users_words(self):
+        from leadsmith import jobs
+        _, prompt = jobs._fmt("deck", {"domains": ["comfy-test.org"], "rebuild": True,
+                                       "extra": "Lead with the TikTok plan; the sample is three creator profiles"})
+        self.assertIn("The user asked to rebuild", prompt)
+        self.assertIn("WHAT THE USER WANTS IN THIS DECK", prompt)
+        self.assertEqual(prompt.count("Lead with the TikTok plan"), 1)
+        _, plain = jobs._fmt("deck", {"domains": ["comfy-test.org"]})
+        self.assertNotIn("asked to rebuild:", plain)
+        self.assertNotIn("WHAT THE USER WANTS", plain)
+
+    def test_the_emails_can_follow_the_new_deck(self):
+        from leadsmith import engines, jobs
+        with mock.patch.object(jobs, "_launch_chain", side_effect=lambda stages, session: stages), \
+                mock.patch.object(engines.Engine, "path", return_value="x"):
+            stages = jobs.start("deck", {"domains": ["comfy-test.org"], "rebuild": True, "rewrite_emails": True}, "claude")
+            self.assertEqual([s.kind for s in stages], ["deck", "write"])
+            self.assertTrue(stages[0].title.startswith("Rebuild deck"))
+            self.assertIn("deck.sample", stages[1].prompt)
+            only_deck = jobs.start("deck", {"domains": ["comfy-test.org"], "rebuild": True}, "claude")
+            self.assertEqual([s.kind for s in only_deck], ["deck"])
+
+
 class IdeaSwapTests(unittest.TestCase):
     def test_an_idea_reused_for_another_company_is_flagged(self):
         from leadsmith import server

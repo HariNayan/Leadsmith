@@ -127,6 +127,7 @@ Every draft waits here. You see why now, the ideas, all three emails (day 0, 3 a
 
 - **Edit** next to the address fixes a wrong or guessed email. It's then marked *Entered by you*.
 - **Attach deck** and **View deck** show and attach the PDF deck made for that company. Its pages show as thumbnails above the emails.
+- **Regenerate deck** (or **Make deck**) writes a new one. Type what it should say, such as "lead with the TikTok plan" or "keep it to four pages", and tick whether the unsent emails should be rewritten to match it.
 - A shared inbox (team@, info@) is flagged, with **Find a person's email** to look for someone's own address.
 
 ### Decks made for each company
