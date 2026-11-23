@@ -360,8 +360,8 @@ def enhance_request(text: str, count: int | None = None) -> dict[str, object]:
     }
     signals = _signals(icp)
     skip = _section_items(icp, "Disqualifiers")
-    lines = [f"Goal: {text}" if text else f"Goal: find {count or 10} new companies that fit my ideal customer"]
-    lines.append(f"How many: {count or 10} companies (fewer is fine if that's all that genuinely fit).")
+    lines = [f"Goal: {text}" if text else f"Goal: find {count or 10} new leads that fit my ideal customer"]
+    lines.append(f"How many: {count or 10} (fewer is fine if that's all that genuinely fit).")
     fit = [f"{k}: {_brief(v)}" for k, v in (("Industries", fields["industries"]), ("Size", fields["size"]),
                                              ("Locations", fields["where"]), ("Business model", fields["model"]),
                                              ("Uses", fields["tech"])) if v]
@@ -375,8 +375,9 @@ def enhance_request(text: str, count: int | None = None) -> dict[str, object]:
         lines.append(f"People: find the {_brief(fields['titles'], 3)}, with a published email where possible.")
     if fields["product"]:
         lines.append(f"Why they'd care: we offer {_brief(fields['product'])}.")
-    lines.append("Quality bar: real companies with a working website only; a source link and date for every signal; "
-                 "nothing invented. Return fewer results rather than weak ones.")
+    lines.append("Quality bar: only the kind of lead my goal and profile describe (never a different kind to reach the "
+                 "number); real and verifiable; a source link and date for every signal; nothing invented. "
+                 "Return fewer results rather than weak ones.")
     used = sum(bool(v) for v in fields.values()) + bool(signals) + bool(skip)
     return {"text": "\n".join(lines), "used_profile": used > 0,
             "missing": None if used else "Your Business profile is mostly empty, so there was little to add. "

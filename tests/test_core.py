@@ -526,6 +526,30 @@ class EngineTests(unittest.TestCase):
             cmd, _ = claude.command("")
             self.assertIn("Agent", cmd[cmd.index("--allowedTools") + 1].split(","))
 
+    def test_find_runs_treat_the_kind_of_customer_as_a_hard_requirement(self):
+        """Whatever kind of lead the brief names is who gets saved: no default kind, no swapping to reach the number."""
+        from leadsmith import engines, jobs
+
+        for key in ("codex", "claude"):
+            prompt = jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES[key])
+            self.assertIn("KIND of lead the user's brief asks for is a hard requirement", prompt)
+            self.assertNotIn("only real companies", prompt)
+        solo = jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["codex"])
+        self.assertIn("not the kind of lead the brief asks for", solo)
+
+    def test_creator_rules_are_in_the_playbooks_and_scoped_to_creator_briefs(self):
+        from leadsmith import engines, jobs
+
+        solo = jobs.full_prompt("find_buyers", "Find 5 buyers.", engines.ENGINES["codex"])
+        self.assertIn("When the leads are individual creators", solo)
+        self.assertIn("this section applies only then", solo)
+        self.assertIn("70% / 30%", solo)
+        self.assertIn("Faceless", solo)
+        self.assertIn("No website needed", solo)
+        self.assertIn("Email: YouTube first", solo)  # people-finder
+        self.assertIn("Then a guess is allowed", solo)
+        self.assertIn("add manually", solo)
+
     def test_model_lists_for_the_dropdown(self):
         import json as _json
         import tempfile as _tmp
@@ -1072,12 +1096,23 @@ class QualityTests(unittest.TestCase):
                 brain.write_brain(n, text)
         text = out["text"]
         self.assertIn("Goal: find me some leads", text)
-        self.assertIn("How many: 7 companies", text)
+        self.assertIn("How many: 7 (", text)
         self.assertIn("dental clinics", text)
         self.assertIn("Opening a new branch; Hiring a front-desk manager", text)  # strongest signal first
         self.assertIn("Skip: Hospital chains", text)
         self.assertNotIn("TODO", text)
         self.assertIn("Owner, Clinic director", text)
+        self.assertIn("only the kind of lead my goal and profile describe", text)
+
+    def test_enhance_does_not_assume_a_kind_of_lead(self):
+        """Whatever kind of customer the user's goal names, the brief must not push another one."""
+        from leadsmith import brain
+
+        for goal in ("Find 15 YouTube creators in AI", "Find 8 dentists in Leeds", "Find 5 SaaS startups"):
+            out = brain.enhance_request(goal, count=5)["text"]
+            self.assertIn(f"Goal: {goal}", out)
+            self.assertNotIn("companies", out)
+            self.assertNotIn("working website", out)
 
     def test_quality_report_flags_unsourced_and_generic_work(self):
         import uuid
