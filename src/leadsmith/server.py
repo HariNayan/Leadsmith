@@ -595,8 +595,10 @@ def render_step_template(contact_id: int, step: int) -> dict:
 
     Returns mode 'ai' (with any extra instruction) when the step has no fixed template: write it yourself then.
     For mode 'fixed', save the returned subject/body with save_draft as-is, except: replace each {placeholder} named in
-    `fill_these` with one short sentence backed by research, and if `empty` lists fields with no value, smooth the
-    sentence around them. Don't rewrite the user's wording.
+    `fill_these` with what fits where it sits (a short phrase for a blank like {specific_topic} inside a sentence,
+    one short sentence for a blank on its own line), true and backed by research (for a creator, their recent video
+    titles from youtube_channel), and if `empty` lists fields with no value, smooth the sentence around them. The
+    placeholder's name says what to write. Don't rewrite the user's wording.
     """
     return templates.render(contact_id, step)
 

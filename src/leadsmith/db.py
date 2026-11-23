@@ -1118,6 +1118,8 @@ def save_step_template(step: int, mode: str, subject: str | None = None, body: s
         raise ValueError("mode must be ai or fixed")
     if mode == "fixed" and not (body or "").strip():
         raise ValueError("A fixed template needs a body.")
+    if len(body or "") > 20_000 or len(subject or "") > 500:
+        raise ValueError("That template is too long. A template is usually a few paragraphs.")
     clean = lambda v: (v or "").strip() or None  # noqa: E731
     with connect() as conn:
         conn.execute(

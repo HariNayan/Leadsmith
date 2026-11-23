@@ -1193,6 +1193,7 @@ function renderComposer(steps) {
       <div class="actions"><button class="btn sm" data-open="${esc(c.domain)}">${icon("building", "sm")}Company</button>
         ${c.has_deck ? `<a class="btn sm" href="/api/decks/${encodeURIComponent(c.domain)}" target="_blank" rel="noopener">${icon("file", "sm")}View deck</a>`
           : `<button class="btn sm" data-deck-regen title="Write a deck made for this company">${icon("file", "sm")}Make deck</button>`}
+        ${steps.some((x) => x.channel === "email" && x.kind !== "reply" && x.status !== "sent") ? `<button class="btn sm" data-use-template title="Rewrite this person's unsent emails from your saved email templates">${icon("edit", "sm")}Use my template</button>` : ""}
         ${pending.length > 1 ? `<button class="btn sm" data-approve-all>${icon("check", "sm")}Approve all ${pending.length}</button>` : ""}</div>
     </div>
     ${c.why_now ? `<div class="context">${icon("sparkles")}<div><b>Why now.</b> ${esc(c.why_now)}</div></div>` : '<div style="height:14px"></div>'}
@@ -1283,6 +1284,30 @@ function renderComposer(steps) {
   on("[data-test]", async () => { try { await save(); const r = await api(`/api/drafts/${s.id}/test`, { method: "POST", body: {} }); toast(`Test sent to ${esc(r.sent_to)}`); } catch (e) { fail(e); } });
   on("[data-open]", () => openAccount(c.domain));
   $$("[data-deck-regen]", box).forEach((b) => (b.onclick = () => deckModal(c.domain, c.company, c.has_deck)));
+  on("[data-use-template]", () => {
+    const unsent = steps.filter((x) => x.channel === "email" && x.kind !== "reply" && x.status !== "sent");
+    modal({
+      title: `Rewrite ${fullName(c)}'s emails with your template?`, art: "mail", confirm: "Use my template",
+      intro: `Your saved email template replaces ${unsent.length === 1 ? "the email" : `the ${unsent.length} emails`} that haven't gone out yet (${unsent.map((x) => `email ${x.step}`).join(", ")}). Steps without a template, and emails already sent, stay as they are.`,
+      body: `<div class="callout" style="margin-bottom:12px">${icon("info")}<div>Any edits you made to those emails are replaced, and they come back to <b>To review</b> for you to approve again. Add or change a template in <a href="#/settings">Settings</a>.</div></div>
+        <p class="help" style="margin:0">A template that uses a field only the AI can write, like <code>{personal_line}</code>, is handed to the agent for that step.</p>`,
+      onConfirm: async () => {
+        const r = await api(`/api/contacts/${c.contact_id}/apply-templates`, { method: "POST", body: {} });
+        const parts = [];
+        if (r.applied.length) parts.push(`Email ${r.applied.join(", ")} rewritten from your template`);
+        if (r.needs_ai.length) {
+          await startJob("rewrite", { contact_id: c.contact_id, extra:
+            `Use my saved email template for step ${r.needs_ai.join(" and step ")}: call render_step_template, fill only the placeholders it lists, and don't reword the rest. Leave every other step exactly as it is.` }, { quiet: true });
+          parts.push(`the agent is filling in email ${r.needs_ai.join(", ")} (<a href="#/activity">View run</a>)`);
+        }
+        if (!parts.length) parts.push("No template matched this person's emails, so nothing changed");
+        const gaps = Object.entries(r.empty || {});
+        toast(`${parts.join("; ")}.${gaps.length ? ` Check ${gaps.map(([s, f]) => `email ${s} (no ${f.join(", ")} for this lead)`).join(", ")}.` : ""}`, gaps.length ? "error" : "ok", 8000);
+        state.reviewTab = "draft";
+        refreshOverview(); render();
+      },
+    });
+  });
   on("[data-new-ideas]", () => {
     const company = c.company || c.domain;
     const had = ((state.reviewIdeas || {})[c.domain] || []).length;
@@ -1703,10 +1728,93 @@ async function loadJob(id) {
   } catch (e) { el.innerHTML = `<div class="callout red">${icon("alert")}${esc(e.message)}</div>`; }
 }
 
+// ── Email templates in Settings: upload your own wording for a sequence step ──
+// A file is read in the browser (.txt, .md, .html, .eml), turned into plain text and saved as that step's
+// template through the same endpoint as the Business profile's Email steps tab.
+const TEMPLATE_FILE_LIMIT = 200 * 1024;
+
+function templateFromFile(name, raw) {
+  let text = raw.replace(/\r\n?/g, "\n"), subject = "";
+  const ext = (name.split(".").pop() || "").toLowerCase();
+  if (ext === "eml") {
+    const cut = text.indexOf("\n\n");
+    const head = cut === -1 ? text : text.slice(0, cut);
+    const m = head.match(/^Subject:[ \t]*(.+)$/im);
+    if (m) subject = m[1].trim();
+    text = cut === -1 ? "" : text.slice(cut + 2);
+  } else if (ext === "html" || ext === "htm") {
+    const doc = new DOMParser().parseFromString(
+      text.replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|h[1-6]|li|tr)>/gi, "\n\n"), "text/html");
+    doc.querySelectorAll("script, style, head").forEach((n) => n.remove());
+    text = doc.body ? doc.body.textContent : "";
+  }
+  const first = text.match(/^\s*Subject:[ \t]*(.+)\n/i);
+  if (first) { subject = subject || first[1].trim(); text = text.slice(first[0].length); }
+  return { subject, body: text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim() };
+}
+
+function templateModal({ steps, placeholders, step: startStep, onSaved }) {
+  const byStep = Object.fromEntries(steps.map((t) => [t.step, t]));
+  modal({
+    title: "Add an email template", art: "mail", wide: true, confirm: "Save template",
+    intro: "Upload a file or write one here. It becomes the wording for that email in every new sequence; the AI only fills in what you leave as a placeholder.",
+    body: `
+      <label class="field">Which email
+        <select id="tpl-step">${steps.map((t) => `<option value="${t.step}" ${t.step === startStep ? "selected" : ""}>Step ${t.step} · ${esc(t.name)}${t.mode === "fixed" ? " (has your template)" : ""}</option>`).join("")}</select></label>
+      <div class="field">Upload a file
+        <input type="file" id="tpl-file" accept=".txt,.md,.html,.htm,.eml,text/plain,text/html">
+        <span class="help">.txt, .md, .html or .eml, up to 200 KB. It's read in your browser and saved only on this computer. A first line like <code>Subject: ideas for {company}</code> becomes the subject. HTML is saved as plain text.</span></div>
+      <label class="field" id="tpl-subject-row">Subject<input type="text" id="tpl-subject" placeholder="ideas for {company}"></label>
+      <label class="field">Body<textarea id="tpl-body" rows="10" style="font:13px/1.6 var(--mono)" placeholder="Hi {first_name},&#10;&#10;..."></textarea></label>
+      <p class="help" id="tpl-replace" hidden>${icon("alert", "sm")} This step already has your template. Saving replaces it.</p>
+      <p class="help">Fields filled from the lead: ${Object.keys(placeholders).map((k) => `<code>{${k}}</code>`).join(" ")}. Any other <code>{name}</code>, like <code>{personal_line}</code>, is written by the AI as one sourced sentence. Your signature and opt-out line are added when sending.</p>`,
+    onConfirm: async (root) => {
+      const step = Number($("#tpl-step", root).value);
+      const body = $("#tpl-body", root).value.trim();
+      if (!body) throw new Error("Upload a file or write the template first.");
+      const saved = await api(`/api/templates/${step}`, { method: "PUT", body: {
+        mode: "fixed", subject: step === 1 ? $("#tpl-subject", root).value : "", body, instruction: byStep[step]?.instruction || "" } });
+      const own = (saved.converted || []).filter((x) => !x.ai), ai = (saved.converted || []).filter((x) => x.ai);
+      toast(`Saved as the template for step ${step}. The writer uses it for every new draft.${own.length ? ` Filled from the lead: ${own.map((x) => `${esc(x.from)} → ${esc(x.to)}`).join(", ")}.` : ""}${ai.length ? ` Written by the AI for each lead: ${ai.map((x) => `${esc(x.from)} → ${esc(x.to)}`).join(", ")}.` : ""}`, "ok", ai.length || own.length ? 12000 : 4500);
+      onSaved();
+    },
+  });
+  const root = $("#modal-root");
+  const sync = () => {
+    const step = Number($("#tpl-step", root).value), t = byStep[step];
+    $("#tpl-subject-row", root).hidden = step !== 1;
+    $("#tpl-replace", root).hidden = !(t && t.mode === "fixed");
+  };
+  const prefill = () => {
+    const t = byStep[Number($("#tpl-step", root).value)];
+    $("#tpl-subject", root).value = t && t.mode === "fixed" ? t.subject || "" : "";
+    $("#tpl-body", root).value = t && t.mode === "fixed" ? t.body || "" : "";
+    sync();
+  };
+  $("#tpl-step", root).onchange = prefill;
+  prefill();
+  $("#tpl-file", root).onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > TEMPLATE_FILE_LIMIT) { e.target.value = ""; return toast("That file is over 200 KB. A template is usually a few paragraphs.", "error"); }
+    try {
+      const { subject, body } = templateFromFile(file.name, await file.text());
+      if (!body) { e.target.value = ""; return toast("No text found in that file.", "error"); }
+      $("#tpl-body", root).value = body;
+      if (subject) $("#tpl-subject", root).value = subject;
+      toast(`Loaded ${file.name}. Check it below, then save.`);
+    } catch (err) { fail(err); }
+  };
+}
+
 // ── Settings ───────────────────────────────────────────────────────────
 PAGES.settings = async () => {
-  const s = await api("/api/settings");
+  const [s, tpl] = await Promise.all([api("/api/settings"), api("/api/templates")]);
   const f = s.settings;
+  const templateList = (steps) => steps.map((t) => `<div class="toggle-row" data-tpl-row="${t.step}"><div>
+      <div style="font-weight:500">Step ${t.step} · ${esc(t.name)}</div>
+      <div style="color:var(--text-2);font-size:12.5px">${t.mode === "fixed" ? `Your template${t.subject ? `: “${esc(t.subject)}”` : ""}` : "The AI writes it fresh for each lead"}</div></div>
+      <div class="actions">${t.mode === "fixed" ? `<button class="btn sm" data-tpl-edit="${t.step}">${icon("edit", "sm")}Replace</button><button class="btn sm" data-tpl-remove="${t.step}">${icon("x", "sm")}Remove</button>` : ""}</div></div>`).join("");
   const field = (key, extra = "") => {
     const x = f[key];
     if (x.kind === "bool") return `<div class="toggle-row"><div><div style="font-weight:500">${esc(x.label)}</div>${x.help ? `<div style="color:var(--text-2);font-size:12.5px">${esc(x.help)}</div>` : ""}</div>
@@ -1728,6 +1836,9 @@ PAGES.settings = async () => {
        <div class="actions"><button class="btn sm" id="test-gmail">${icon("refresh", "sm")}Test connection</button><span id="gmail-result" style="color:var(--text-2);font-size:12.5px"></span></div>`)}
     ${set("Sending", "", `${field("TEST_RECIPIENT", 'placeholder="you+test@gmail.com"')}${field("ALLOW_GUESSED_EMAILS")}${field("AUTO_FOLLOWUPS")}${field("DAILY_SEND_LIMIT")}${field("WARMUP")}${field("WARMUP_START")}${field("WARMUP_STEP")}${field("SEND_GAP_SECONDS")}${field("SEND_HOURS", 'placeholder="9-17"')}${field("SEND_WEEKDAYS_ONLY")}${field("PROSPECT_TIMEZONE")}`)}
     ${set("Signature", "", `${field("SENDER_NAME")}${field("SENDER_SIGNATURE")}${field("POSTAL_ADDRESS")}${field("OPT_OUT_LINE")}`)}
+    ${set("Email templates", "Your own wording for the emails in a sequence. Steps without one are written by the AI.",
+      `<div id="tpl-list">${templateList(tpl.steps)}</div>
+       <div class="actions"><button class="btn" id="tpl-add">${icon("upload", "sm")}Add email template</button></div>`)}
     ${set("Verified emails", "", field("BETTERCONTACT_API_KEY", 'autocomplete="off"'))}
     ${set("Decks", s.browser ? "" : "No Chrome or Edge found, so decks are saved as HTML.", `${field("DECK_ENGINE", 'placeholder="opencode"')}${field("DECK_MODEL")}${field("DECK_COLOR")}`)}
     ${set("Data", "",
@@ -1748,6 +1859,31 @@ PAGES.settings = async () => {
   $$("[data-key]").forEach((el) => (el.dataset.orig = String(el.type === "checkbox" ? el.checked : el.value)));
   wireModelPicker(main);
   wireEngineCards(main, s.engines, (connected) => { if (connected !== null) { refreshOverview(); render(); } });
+  // Email templates: re-read them after every change so the list always shows what the writer will use.
+  const openTemplates = async (step) => {
+    const fresh = await api("/api/templates");
+    templateModal({ steps: fresh.steps, placeholders: fresh.placeholders, step: step || 1, onSaved: reloadTemplates });
+  };
+  const wireTemplates = (steps) => {
+    $$("[data-tpl-edit]").forEach((b) => (b.onclick = () => openTemplates(Number(b.dataset.tplEdit)).catch(fail)));
+    $$("[data-tpl-remove]").forEach((b) => (b.onclick = () => {
+      const step = Number(b.dataset.tplRemove), t = steps.find((x) => x.step === step);
+      modal({ title: `Remove your template for step ${step}?`, art: "mail", danger: true, confirm: "Remove",
+        intro: "The AI will write this email fresh for each lead again. Your extra instruction for the step, if any, is kept.",
+        onConfirm: async () => {
+          await api(`/api/templates/${step}`, { method: "PUT", body: { mode: "ai", instruction: t?.instruction || "" } });
+          toast(`Step ${step} goes back to the AI`);
+          await reloadTemplates();
+        } });
+    }));
+  };
+  const reloadTemplates = async () => {
+    const fresh = await api("/api/templates");
+    $("#tpl-list").innerHTML = templateList(fresh.steps);
+    wireTemplates(fresh.steps);
+  };
+  wireTemplates(tpl.steps);
+  $("#tpl-add").onclick = () => openTemplates(tpl.steps.find((t) => t.mode !== "fixed")?.step || 1).catch(fail);
   $("#test-gmail").onclick = async () => {
     // Save a changed address or app password first: the test reads the saved settings.
     const body = {};

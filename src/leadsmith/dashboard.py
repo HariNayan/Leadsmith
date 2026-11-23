@@ -270,9 +270,14 @@ async def put_template(request: Request) -> Response:
     step = int(request.path_params["step"])
     if step not in templates.STEPS:
         raise ApiError("Unknown step", 404)
+    subject, changed_s = templates.normalize_placeholders(data.get("subject"))
+    body_text, changed_b = templates.normalize_placeholders(data.get("body"))
     try:
-        return ok(db.save_step_template(step, data.get("mode") or "ai", data.get("subject"), data.get("body"),
-                                        data.get("instruction")))
+        saved = db.save_step_template(step, data.get("mode") or "ai", subject, body_text, data.get("instruction"))
+        # What was rewritten into {name} style, so the user can see it (e.g. [First Name] → {first_name}).
+        saved["converted"] = [{"from": a, "to": b, "ai": b.strip("{}") not in templates.PLACEHOLDERS}
+                              for a, b in changed_s + [c for c in changed_b if c not in changed_s]]
+        return ok(saved)
     except ValueError as e:
         raise ApiError(str(e)) from e
 
@@ -646,6 +651,53 @@ async def contact_back_to_review(request: Request) -> Response:
     return ok({"moved": moved})
 
 
+async def contact_apply_templates(request: Request) -> Response:
+    """Review → Use my template: rewrite this person's unsent emails from the user's saved templates.
+
+    A step whose template only uses lead fields is filled right here and saved as a draft (so it needs approving
+    again). A template with a placeholder only the AI can fill, like {personal_line}, is returned in `needs_ai` for
+    the caller to hand to the rewrite run. Steps with no saved template are left alone. Sent emails are never touched.
+    """
+    contact_id = int(request.path_params["id"])
+    contact = db.get_contact(contact_id)
+    if not contact:
+        raise ApiError("Unknown person", 404)
+    fixed = {t["step"] for t in templates.customised() if t["mode"] == "fixed"}
+    if not fixed:
+        raise ApiError("You haven't saved an email template yet. Add one in Settings, under Email templates.")
+    with db.connect() as conn:
+        account = db.one(conn.execute("SELECT name FROM accounts WHERE domain = ?", (contact["domain"],))) or {}
+        drafts = db.rows(conn.execute(
+            "SELECT * FROM drafts WHERE contact_id = ? AND channel = 'email' AND kind = 'sequence'"
+            " AND status IN ('draft', 'approved', 'rejected') ORDER BY step", (contact_id,)))
+    if not drafts:
+        raise ApiError("This person has no unsent emails to rewrite.")
+    applied, needs_ai, skipped, empty = [], [], [], {}
+    for draft in drafts:
+        step = draft["step"]
+        if step not in fixed:
+            skipped.append(step)
+            continue
+        out = templates.render(contact_id, step)
+        if out["fill_these"]:
+            needs_ai.append(step)
+            continue
+        subject = out["subject"] if step == 1 and out["subject"] else draft["subject"]
+        attached = bool(draft["attach_deck"]) and decks.pdf_ready(contact["domain"])
+        result = lint.check(subject, out["body"], step, account.get("name"), contact.get("first_name"),
+                            kind="sequence", attached=attached)
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET subject = ?, body = ?, lint = ?, status = 'draft', updated_at = ? WHERE id = ?",
+                         (subject, out["body"], json.dumps(result), db.now(), draft["id"]))
+        applied.append(step)
+        if out["empty"]:
+            empty[step] = out["empty"]
+    if applied:
+        db.log_event("template:applied", f"steps {', '.join(map(str, applied))} rewritten from your templates",
+                     contact_id, contact["domain"])
+    return ok({"applied": applied, "needs_ai": needs_ai, "skipped": skipped, "empty": empty})
+
+
 async def contact_reply_kind(request: Request) -> Response:
     """Correct how a reply was read: an automatic answer (the sequence resumes, via Review) or a real person."""
     kind = str((await body(request)).get("kind") or "")
@@ -941,6 +993,7 @@ def create_app(port: int = 4600):
         Route("/api/contacts/{id:int}/email", _wrap(edit_contact_email), methods=["PUT"]),
         Route("/api/contacts/{id:int}/recipients", _wrap(edit_contact_recipients), methods=["PUT"]),
         Route("/api/contacts/{id:int}/review", _wrap(contact_back_to_review), methods=["POST"]),
+        Route("/api/contacts/{id:int}/apply-templates", _wrap(contact_apply_templates), methods=["POST"]),
         Route("/api/contacts/{id:int}/status", _wrap(contact_status), methods=["POST"]),
         Route("/api/contacts/{id:int}/reply-kind", _wrap(contact_reply_kind), methods=["POST"]),
         Route("/api/enhance", _wrap(enhance), methods=["POST"]),

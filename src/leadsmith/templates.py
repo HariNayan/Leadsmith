@@ -2,7 +2,8 @@
 
 Each step is either written by the AI (optionally with an extra instruction from you) or uses your fixed template.
 Fixed templates take {placeholders}; the ones we know are filled from the lead, and any others ({personal_line},
-{observation}...) are left for the writer agent to fill with one sourced sentence each.
+{observation}...) are left for the writer agent to fill with a short, sourced phrase or sentence each.
+Blanks written as [First Name] or {{first_name}} are read as {first_name} (see normalize_placeholders).
 """
 from __future__ import annotations
 
@@ -29,11 +30,60 @@ PLACEHOLDERS = {
 }
 FIELD_RE = re.compile(r"\{([a-z_][a-z0-9_]*)\}")
 
+# Templates written elsewhere mark their blanks in other ways: [First Name], {{first_name}}, {First Name}. Those are
+# turned into {first_name} style. A label we know becomes that lead field; any other label ("[specific topic]")
+# becomes a field for the writer agent to fill, named after the label so it says what to write.
+ALIASES = {
+    "first_name": ("first name", "firstname", "first", "name", "recipient name", "prospect name", "creator name"),
+    "last_name": ("last name", "lastname", "surname", "family name"),
+    "title": ("title", "job title", "role", "position"),
+    "company": ("company", "company name", "business", "business name", "organization", "organisation", "brand",
+                "channel", "channel name"),
+    "domain": ("domain", "website", "company website", "url", "site"),
+    "why_now": ("why now", "reason", "reason for reaching out"),
+    "ideas": ("ideas", "idea menu"),
+}
+_ALIAS_OF = {alias: key for key, names in ALIASES.items() for alias in names}
+_STYLES = (
+    re.compile(r"\{\{\s*([^{}\n]{1,60}?)\s*\}\}"),               # {{first_name}}
+    re.compile(r"\[([^\[\]\n]{1,60})\](?!\()"),                   # [First Name]  (not a markdown link)
+    re.compile(r"(?<!\{)\{([^{}\n]{1,60})\}(?!\})"),              # {First Name}
+)
+
+
+def _slug(label: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")[:50].strip("_")
+    return slug if slug and not slug[0].isdigit() else f"field_{slug}".strip("_")
+
+
+def normalize_placeholders(text: str | None) -> tuple[str, list[tuple[str, str]]]:
+    """Returns (text with every blank written as {name}, [(what was written, what it became)])."""
+    changed: list[tuple[str, str]] = []
+
+    def swap(m: re.Match) -> str:
+        label = m.group(1).strip()
+        if FIELD_RE.fullmatch(m.group(0)):  # already {first_name}
+            return m.group(0)
+        key = _ALIAS_OF.get(re.sub(r"[\s_-]+", " ", label.lower())) or _slug(label)
+        new = "{" + key + "}"
+        if (m.group(0), new) not in changed:
+            changed.append((m.group(0), new))
+        return new
+
+    for pattern in _STYLES:
+        text = pattern.sub(swap, text or "")
+    return text, changed
+
 
 def all_steps() -> list[dict[str, Any]]:
     saved = {t["step"]: t for t in db.step_templates()}
     blank = {"mode": "ai", "subject": None, "body": None, "instruction": None, "updated_at": None}
-    return [{**blank, **saved.get(step, {}), "step": step, "name": STEP_NAMES[step]} for step in STEPS]
+    steps = [{**blank, **saved.get(step, {}), "step": step, "name": STEP_NAMES[step]} for step in STEPS]
+    for t in steps:  # templates saved before this was understood still work: read them in {name} style
+        for field in ("subject", "body"):
+            if t.get(field):
+                t[field] = normalize_placeholders(t[field])[0]
+    return steps
 
 
 def customised() -> list[dict[str, Any]]:

@@ -391,6 +391,128 @@ class StepTemplateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             db.save_step_template(3, "fixed", body="  ")
 
+    def test_an_uploaded_template_can_replace_and_be_removed_and_is_size_capped(self):
+        from leadsmith import templates
+
+        db.save_step_template(1, "fixed", "ideas for {company}", "Hi {first_name},\n\nUploaded wording.", "Keep this")
+        db.save_step_template(1, "fixed", "new subject", "Hi {first_name},\n\nSecond upload.", "Keep this")
+        step1 = templates.all_steps()[0]
+        self.assertEqual((step1["mode"], step1["subject"], step1["instruction"]), ("fixed", "new subject", "Keep this"))
+        self.assertIn("Second upload", step1["body"])
+        db.save_step_template(1, "ai", instruction="Keep this")  # what Remove sends: the instruction survives
+        step1 = templates.all_steps()[0]
+        self.assertEqual((step1["mode"], step1["body"], step1["instruction"]), ("ai", None, "Keep this"))
+        with self.assertRaises(ValueError):
+            db.save_step_template(1, "fixed", "s", "x" * 20_001)
+
+
+class PlaceholderStyleTests(unittest.TestCase):
+    """Templates written elsewhere use [First Name] or {{first_name}}: they must be read as {first_name}."""
+
+    def tearDown(self):
+        with db.connect() as conn:
+            conn.execute("DELETE FROM step_templates")
+
+    def test_other_styles_become_lead_fields_or_ai_fields(self):
+        from leadsmith import templates
+
+        text, changed = templates.normalize_placeholders(
+            "Hi [First Name], at {{company}} and {Last Name}; video on [specific topic], [Their Role]. {why_now} "
+            "[docs](https://x.io) {{ idea_a }}")
+        self.assertEqual(text, "Hi {first_name}, at {company} and {last_name}; video on {specific_topic}, {their_role}. "
+                               "{why_now} [docs](https://x.io) {idea_a}")
+        self.assertIn(("[specific topic]", "{specific_topic}"), changed)
+        self.assertEqual(templates.normalize_placeholders("Hi {first_name}")[1], [])  # nothing to convert
+
+    def test_a_template_saved_with_brackets_is_filled_when_read(self):
+        from leadsmith import templates
+
+        db.save_step_template(1, "fixed", "[Company] x Kernelhaus", "Hi [First Name],\n\nYour video on [specific topic].")
+        step1 = templates.all_steps()[0]
+        self.assertEqual(step1["subject"], "{company} x Kernelhaus")
+        domain = "brackets-co.io"
+        db.upsert_account(domain, name="Brackets Co")
+        c, _ = db.upsert_contact(domain, first_name="Mia", email=f"mia@{domain}")
+        out = templates.render(c["id"], 1)
+        self.assertEqual(out["subject"], "Brackets Co x Kernelhaus")
+        self.assertIn("Hi Mia,", out["body"])
+        self.assertEqual(out["fill_these"], ["specific_topic"])  # left for the agent, named for what to write
+
+    def test_saving_through_the_dashboard_reports_what_was_converted(self):
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard
+
+        client = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        r = client.put("/api/templates/1", json={"mode": "fixed", "subject": "", "body": "Hi [First Name], re [specific topic]"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["converted"], [{"from": "[First Name]", "to": "{first_name}", "ai": False},
+                                                 {"from": "[specific topic]", "to": "{specific_topic}", "ai": True}])
+        self.assertEqual(db.step_templates()[0]["body"], "Hi {first_name}, re {specific_topic}")
+
+
+class ApplyTemplateInReviewTests(unittest.TestCase):
+    """Review → Use my template rewrites a person's unsent emails from the saved templates."""
+
+    def setUp(self):
+        import uuid
+
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard
+
+        self.c = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        self.domain = f"apply-{uuid.uuid4().hex[:5]}.io"
+        db.upsert_account(self.domain, name="Apply Co", why_now="Launched v2")
+        self.contact, _ = db.upsert_contact(self.domain, first_name="Ana", email=f"ana@{self.domain}", email_status="public")
+        ok = {"ok": True, "issues": [], "fails": 0, "warnings": 0, "words": 5}
+        for step in (1, 2, 3):
+            db.upsert_draft(self.contact["id"], step, f"old subject {step}" if step == 1 else None, f"Old body {step}",
+                            "email", 0, ok)
+
+    def tearDown(self):
+        with db.connect() as conn:
+            conn.execute("DELETE FROM step_templates")
+
+    def status(self):
+        with db.connect() as conn:
+            return {r["step"]: dict(r) for r in db.rows(conn.execute(
+                "SELECT * FROM drafts WHERE contact_id = ?", (self.contact["id"],)))}
+
+    def apply(self):
+        return self.c.post(f"/api/contacts/{self.contact['id']}/apply-templates", json={})
+
+    def test_without_a_saved_template_it_says_where_to_add_one(self):
+        r = self.apply()
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("Settings", r.json()["error"])
+
+    def test_a_template_of_lead_fields_is_filled_and_saved_for_review_without_the_agent(self):
+        db.save_step_template(1, "fixed", "ideas for {company}", "Hi {first_name},\n\nWe could help {company} after {why_now}.")
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'approved' WHERE contact_id = ? AND step = 1", (self.contact["id"],))
+        out = self.apply().json()
+        self.assertEqual((out["applied"], out["needs_ai"], out["skipped"]), ([1], [], [2, 3]))
+        drafts = self.status()
+        self.assertEqual(drafts[1]["subject"], "ideas for Apply Co")
+        self.assertIn("Hi Ana,", drafts[1]["body"])
+        self.assertIn("after Launched v2", drafts[1]["body"])
+        self.assertEqual(drafts[1]["status"], "draft")  # needs approving again
+        self.assertEqual(drafts[2]["body"], "Old body 2")  # steps without a template are left alone
+
+    def test_an_ai_only_placeholder_is_handed_to_the_agent_and_sent_emails_are_untouched(self):
+        db.save_step_template(1, "fixed", "ideas for {company}", "Hi {first_name},\n\n{personal_line}")
+        db.save_step_template(2, "fixed", None, "Hi {first_name}, any thoughts on {idea_c}?")
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'sent' WHERE contact_id = ? AND step = 1", (self.contact["id"],))
+        out = self.apply().json()
+        self.assertEqual((out["applied"], out["needs_ai"]), ([2], []))  # step 1 was sent: never rewritten
+        self.assertEqual(out["empty"], {"2": ["idea_c"]})  # no ideas yet: the user is told
+        self.assertEqual(self.status()[1]["body"], "Old body 1")
+        db.save_step_template(3, "fixed", None, "Hi {first_name}, {observation}")
+        self.assertEqual(self.apply().json()["needs_ai"], [3])
+        self.assertEqual(self.status()[3]["body"], "Old body 3")
+
 
 class BetterContactTests(unittest.TestCase):
     def test_off_without_key_and_parses_a_finished_lookup(self):
