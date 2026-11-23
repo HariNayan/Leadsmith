@@ -365,6 +365,13 @@ def send_approved(limit: int = 10, dry_run: bool = True, followups_only: bool = 
                 if not due:
                     report["skipped"].append({"draft_id": draft["id"], "to": (contact or {}).get("email"), "reason": reason})
                     continue
+                if (draft["step"] == 1 and draft.get("kind", "sequence") == "sequence" and not draft.get("attach_deck")
+                        and decks.pdf_ready(contact["domain"])):
+                    # A deck was made for this lead but the email wouldn't carry it: never send that silently.
+                    report["skipped"].append({"draft_id": draft["id"], "to": contact["email"],
+                                              "reason": "a deck was made for this lead but isn't attached: approve the "
+                                                        "email again in Review (or tick Attach deck) and it goes with the deck"})
+                    continue
                 overdue_days = 0.0
                 if draft["step"] > 1 and draft.get("kind", "sequence") == "sequence":
                     prev = db.one(conn.execute("SELECT * FROM drafts WHERE contact_id = ? AND step = ? AND channel = 'email'",

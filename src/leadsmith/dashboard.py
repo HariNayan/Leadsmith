@@ -464,7 +464,7 @@ def _review(ids: list[int], action: str) -> dict[str, Any]:
     if action not in ("approve", "reject", "reopen"):
         raise ApiError("Unknown action")
     target = {"approve": "approved", "reject": "rejected", "reopen": "draft"}[action]
-    done, refused = [], []
+    done, refused, deck_added = [], [], []
     for draft in db.drafts(None, 100_000):
         if draft["id"] not in ids:
             continue
@@ -478,9 +478,17 @@ def _review(ids: list[int], action: str) -> dict[str, Any]:
         elif draft["status"] in ("sent", "cancelled"):
             refused.append({"id": draft["id"], "reason": f"Already {draft['status']}."})
         else:
+            if (action == "approve" and draft["step"] == 1 and draft["channel"] == "email"
+                    and (draft.get("kind") or "sequence") == "sequence"
+                    and not draft.get("attach_deck") and decks.pdf_ready(draft["domain"])):
+                # A first email always carries the deck made for that lead: approving it ticks Attach deck, so a deck
+                # built after the email was written (or a flag that was lost) can't send the email without it.
+                with db.connect() as conn:
+                    conn.execute("UPDATE drafts SET attach_deck = 1, updated_at = ? WHERE id = ?", (db.now(), draft["id"]))
+                deck_added.append(draft["id"])
             db.set_status("draft", draft["id"], target)
             done.append(draft["id"])
-    return {"done": done, "refused": refused}
+    return {"done": done, "refused": refused, "deck_added": deck_added}
 
 
 # ── outreach ────────────────────────────────────────────────────────────

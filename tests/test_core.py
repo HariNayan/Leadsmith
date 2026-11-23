@@ -1325,6 +1325,76 @@ class AttachedPreviewTests(unittest.TestCase):
         self.assertEqual(mine[0]["attachments"], ["Deckco plan.pdf"])
 
 
+class FirstEmailAlwaysCarriesItsDeckTests(unittest.TestCase):
+    """A deck that exists for a lead must go with its first email, even when the draft's flag was never set (the deck
+    was built after the email was written) or was lost."""
+
+    def setUp(self):
+        import tempfile as _tmp
+        import uuid
+        from pathlib import Path
+
+        from starlette.testclient import TestClient
+
+        from leadsmith import dashboard
+
+        self.c = TestClient(dashboard.create_app(4600), base_url="http://127.0.0.1:4600", headers={"X-Leadsmith-Client": "1"})
+        self.domain = f"carry-{uuid.uuid4().hex[:5]}.io"
+        db.upsert_account(self.domain, name="Carry Co", timezone="UTC")
+        self.contact, _ = db.upsert_contact(self.domain, first_name="Cy", email=f"cy@{self.domain}", email_status="public")
+        pdf = Path(_tmp.mkdtemp()) / "deck.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+        with db.connect() as conn:
+            conn.execute("INSERT OR REPLACE INTO decks (domain, title, slides, pdf_path, error, updated_at) VALUES (?, ?, '[]', ?, NULL, ?)",
+                         (self.domain, "Carry Co plan", str(pdf), db.now()))
+        ok = {"ok": True, "issues": [], "fails": 0, "warnings": 0, "words": 5}
+        self.draft = db.upsert_draft(self.contact["id"], 1, "carry launch", "Hi Cy, a short idea for Carry Co.", "email", 0, ok)
+
+    def flag(self):
+        with db.connect() as conn:
+            return db.one(conn.execute("SELECT attach_deck, status FROM drafts WHERE id = ?", (self.draft["id"],)))
+
+    def preview(self):
+        from unittest import mock
+
+        from leadsmith import mailer
+
+        env = {"GMAIL_ADDRESS": "me@gmail.com", "GMAIL_APP_PASSWORD": "x", "SEND_HOURS": "0-24", "SEND_WEEKDAYS_ONLY": "false",
+               "WARMUP": "false", "TEST_RECIPIENT": ""}
+        with mock.patch.dict(os.environ, env):
+            return mailer.send_approved(50, True)
+
+    def test_approving_a_first_email_ticks_attach_deck_when_a_deck_exists(self):
+        self.assertEqual(self.flag()["attach_deck"], 0)
+        r = self.c.post("/api/drafts/bulk", json={"ids": [self.draft["id"]], "action": "approve"}).json()
+        self.assertEqual(r["done"], [self.draft["id"]])
+        self.assertEqual(r["deck_added"], [self.draft["id"]])
+        self.assertEqual(dict(self.flag()), {"attach_deck": 1, "status": "approved"})
+        mine = [e for e in self.preview()["sent"] if e.get("draft_id") == self.draft["id"]]
+        self.assertEqual(mine[0]["attachments"], ["Carry Co plan.pdf"])
+
+    def test_an_approved_first_email_missing_its_deck_is_held_not_sent_bare(self):
+        with db.connect() as conn:
+            conn.execute("UPDATE drafts SET status = 'approved', attach_deck = 0 WHERE id = ?", (self.draft["id"],))
+        report = self.preview()
+        self.assertFalse([e for e in report["sent"] if e.get("draft_id") == self.draft["id"]])
+        held = [s for s in report["skipped"] if s.get("draft_id") == self.draft["id"]]
+        self.assertIn("isn't attached", held[0]["reason"])
+        # Approving it again adds the deck, and then it goes.
+        self.c.post("/api/drafts/bulk", json={"ids": [self.draft["id"]], "action": "approve"})
+        mine = [e for e in self.preview()["sent"] if e.get("draft_id") == self.draft["id"]]
+        self.assertEqual(mine[0]["attachments"], ["Carry Co plan.pdf"])
+
+    def test_without_a_deck_the_email_is_approved_and_sent_as_it_was(self):
+        with db.connect() as conn:
+            conn.execute("DELETE FROM decks WHERE domain = ?", (self.domain,))
+        r = self.c.post("/api/drafts/bulk", json={"ids": [self.draft["id"]], "action": "approve"}).json()
+        self.assertEqual(r["deck_added"], [])
+        self.assertEqual(self.flag()["attach_deck"], 0)
+        mine = [e for e in self.preview()["sent"] if e.get("draft_id") == self.draft["id"]]
+        self.assertEqual(mine[0]["attachments"], [])
+
+
 class PreviewWhileSendingTests(unittest.TestCase):
     def test_preview_works_while_a_batch_is_sending_but_a_second_send_waits(self):
         from unittest import mock
